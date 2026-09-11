@@ -1,0 +1,255 @@
+/**
+ * dsh-image-paths — host half.
+ *
+ * One read-only HTTP route that serves a single local image file to the chat
+ * UI, so an image path written in assistant prose can render as the picture
+ * itself instead of a string the reader has to go find.
+ *
+ * Why a route rather than a durable session event: the only way the browser can
+ * read image bytes through the shipped client is an attachment referenced by a
+ * session event, and an out-of-tree event type makes the session log
+ * unreadable — the persistence read path refuses any type outside
+ * `KNOWN_SESSION_EVENT_TYPES` unless the writer marks it `ignorable: true`,
+ * which `Session.append` cannot set. This route carries the bytes with no
+ * durable footprint at all, and it works for messages already in the log.
+ *
+ * Threat model: the webserver is loopback-bound, and the route only ever
+ * returns a file that (a) carries a supported image extension, (b) resolves by
+ * real path inside the caller-supplied session workspace root, and (c) begins
+ * with that format's magic bytes. Cross-site browser requests are refused, so
+ * a page the user happens to visit cannot use it to probe local files.
+ */
+
+import { createReadStream, promises as fs } from 'node:fs'
+import { extname, isAbsolute, resolve, sep } from 'node:path'
+import { pipeline } from 'node:stream/promises'
+
+/** Cordis plugin name. */
+export const name = 'image-paths'
+
+/** Required service: the route registry and request dispatch. */
+export const inject = ['webServer']
+
+/** Route prefix owned by this plugin; the client appends `/raw` semantics itself. */
+export const ROUTE = '/plugin/image-paths/raw'
+
+/** Refuse anything larger than this: the browser only ever shows a preview. */
+const MAX_BYTES = 32 * 1024 * 1024
+
+/** Refuse pathologically long inputs before touching the filesystem. */
+const MAX_PATH_CHARS = 4096
+
+/** Extension → the media type that extension must then prove with its magic bytes. */
+export const DECLARED_MEDIA_TYPES = new Map([
+  ['.png', 'image/png'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'],
+  ['.gif', 'image/gif'],
+])
+
+/**
+ * Identify one supported image format from its leading bytes. The extension
+ * only declares a format; these bytes are what the response actually claims.
+ * @param head - at least the first 12 bytes of the file.
+ * @returns the detected media type, or undefined for other content.
+ */
+export function sniffMediaType(head) {
+  const ascii = (offset, text) => {
+    if (head.length < offset + text.length) return false
+    for (let index = 0; index < text.length; index += 1) {
+      if (head[offset + index] !== text.charCodeAt(index)) return false
+    }
+    return true
+  }
+  const bytes = (...expected) => {
+    if (head.length < expected.length) return false
+    return expected.every((byte, index) => head[index] === byte)
+  }
+  if (bytes(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png'
+  if (bytes(0xff, 0xd8, 0xff)) return 'image/jpeg'
+  if (ascii(0, 'GIF87a') || ascii(0, 'GIF89a')) return 'image/gif'
+  if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return 'image/webp'
+  return undefined
+}
+
+/**
+ * Whether one real path sits inside a real root, separators included so a
+ * sibling directory sharing a name prefix cannot pass.
+ * @param realPath - resolved real path of the candidate file.
+ * @param realRoot - resolved real path of the workspace root.
+ * @returns true when the file is the root itself or lies beneath it.
+ */
+export function containedIn(realPath, realRoot) {
+  if (realPath === realRoot) return true
+  const prefix = realRoot.endsWith(sep) ? realRoot : `${realRoot}${sep}`
+  return realPath.startsWith(prefix)
+}
+
+/**
+ * Validate one request against the filesystem and decide the response.
+ *
+ * Every refusal is a status plus a short reason; no path is echoed back beyond
+ * what the caller already sent, and no directory listing is ever performed.
+ * @param requested - the path exactly as the assistant wrote it.
+ * @param cwd - the session workspace root the client supplied.
+ * @returns the decision: `{ status, reason }` for a refusal or `{ status: 200, realPath, mediaType, size }`.
+ */
+export async function resolveImageTarget(requested, cwd) {
+  if (typeof requested !== 'string' || requested.length === 0 || requested.length > MAX_PATH_CHARS) {
+    return { status: 400, reason: 'missing or overlong path' }
+  }
+  if (requested.includes('\0')) return { status: 400, reason: 'invalid path' }
+  if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > MAX_PATH_CHARS || !isAbsolute(cwd)) {
+    return { status: 400, reason: 'missing or non-absolute workspace root' }
+  }
+  const declared = DECLARED_MEDIA_TYPES.get(extname(requested).toLowerCase())
+  if (declared === undefined) return { status: 415, reason: 'not a supported image extension' }
+
+  let realRoot
+  try {
+    realRoot = await fs.realpath(cwd)
+  } catch {
+    return { status: 400, reason: 'workspace root is not readable' }
+  }
+
+  // The authored path may be relative (workspace-relative) or absolute; both
+  // resolve against the root, and the containment test then decides.
+  const candidate = isAbsolute(requested) ? resolve(requested) : resolve(realRoot, requested)
+  let realPath
+  try {
+    realPath = await fs.realpath(candidate)
+  } catch {
+    return { status: 404, reason: 'no such file' }
+  }
+  if (!containedIn(realPath, realRoot)) return { status: 403, reason: 'outside the session workspace' }
+
+  let stat
+  try {
+    stat = await fs.stat(realPath)
+  } catch {
+    return { status: 404, reason: 'no such file' }
+  }
+  if (!stat.isFile()) return { status: 404, reason: 'not a regular file' }
+  if (stat.size === 0) return { status: 404, reason: 'empty file' }
+  if (stat.size > MAX_BYTES) return { status: 413, reason: 'image is too large to display' }
+
+  const handle = await fs.open(realPath, 'r')
+  let head
+  try {
+    const buffer = Buffer.alloc(12)
+    const { bytesRead } = await handle.read(buffer, 0, 12, 0)
+    head = buffer.subarray(0, bytesRead)
+  } finally {
+    await handle.close()
+  }
+  const sniffed = sniffMediaType(head)
+  if (sniffed === undefined) return { status: 415, reason: 'content is not a supported image' }
+  if (sniffed !== declared) return { status: 415, reason: 'content does not match the file extension' }
+
+  return { status: 200, realPath, mediaType: sniffed, size: stat.size }
+}
+
+/**
+ * Whether the request's `Host` names the loopback interface.
+ *
+ * This is the DNS-rebinding guard: a page on `evil.test` that resolves that
+ * name to 127.0.0.1 would be same-origin *after* rebinding, so only a Host that
+ * is literally loopback is answered. A deployment that binds the GUI to a
+ * non-loopback interface must widen this.
+ * @param req - the incoming request.
+ * @returns true when the Host header is a loopback host.
+ */
+export function loopbackHost(req) {
+  const host = req.headers.host
+  if (typeof host !== 'string' || host === '') return false
+  if (host.startsWith('[')) return host.startsWith('[::1]')
+  const name = host.split(':')[0]
+  return name === '127.0.0.1' || name === 'localhost'
+}
+
+/**
+ * Whether the request may be answered at all. A browser always sends
+ * `Sec-Fetch-Site`; anything cross-site is refused. Without that header the
+ * caller is not a browser page (curl, a test), and loopback reachability is
+ * the whole access model — the same trust the rest of the local GUI assumes.
+ * @param req - the incoming request.
+ * @returns true when the request is same-origin or not a browser request.
+ */
+export function sameOrigin(req) {
+  if (!loopbackHost(req)) return false
+  const site = req.headers['sec-fetch-site']
+  if (typeof site === 'string') return site === 'same-origin' || site === 'none'
+  const origin = req.headers.origin
+  if (typeof origin !== 'string' || origin === '') return true
+  try {
+    return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
+/** Write one short plain-text refusal. */
+function refuse(res, status, reason) {
+  const body = `${reason}\n`
+  res.writeHead(status, {
+    'content-type': 'text/plain; charset=utf-8',
+    'content-length': String(Buffer.byteLength(body)),
+    'cache-control': 'no-store',
+    'x-content-type-options': 'nosniff',
+  })
+  res.end(body)
+}
+
+/**
+ * Serve one image request.
+ * @param req - the incoming request (method, URL, and cross-site headers).
+ * @param res - the response this handler owns end to end.
+ */
+export async function serveImage(req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    refuse(res, 405, 'method not allowed')
+    return
+  }
+  if (!sameOrigin(req)) {
+    refuse(res, 403, 'cross-site request refused')
+    return
+  }
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const decision = await resolveImageTarget(
+    url.searchParams.get('path') ?? '',
+    url.searchParams.get('cwd') ?? '',
+  )
+  if (decision.status !== 200) {
+    refuse(res, decision.status, decision.reason)
+    return
+  }
+  res.writeHead(200, {
+    'content-type': decision.mediaType,
+    'content-length': String(decision.size),
+    // Session-scoped bytes behind a loopback route: cacheable briefly, never shared.
+    'cache-control': 'private, max-age=300',
+    'x-content-type-options': 'nosniff',
+  })
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  try {
+    await pipeline(createReadStream(decision.realPath), res)
+  } catch {
+    // The response is already committed; a truncated body is the honest outcome.
+    res.destroy()
+  }
+}
+
+/**
+ * Register the image route for this plugin's lifetime.
+ * @param ctx - the host plugin context carrying `webServer`.
+ */
+export function apply(ctx) {
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'prefix', path: ROUTE, handler: serveImage }),
+    'image-paths: image route',
+  )
+}

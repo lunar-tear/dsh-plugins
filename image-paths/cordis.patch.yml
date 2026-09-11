@@ -1,0 +1,8 @@
+# The bundle layer for this plugin. A profile that lists the package as a
+# bundle (`dsh plugin --profile web add /path/to/dsh-plugins/image-paths`)
+# inserts this row at boot. The row names the package rather than a path,
+# because a bundle layer resolves every row name against the bundle's own
+# directory.
+- insert:
+    - id: image-paths
+      name: dsh-image-paths

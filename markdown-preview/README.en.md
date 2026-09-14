@@ -75,6 +75,14 @@ The linked document is an explicit choice, so the conversation's own following
 never overrides it — handy for pasting a plan to a colleague, or bookmarking one
 for yourself.
 
+## What it looks like
+
+![The Markdown preview panel](../docs/preview-panel.png)
+
+The panel is the shell's own renderer: maths, code highlighting, tables, task
+lists and footnotes match the chat exactly, and the document's local images are
+shown too.
+
 ## How it is built
 
 | Half | File | Role |

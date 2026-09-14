@@ -18,6 +18,24 @@ both halves are loaded from where they sit on disk.
 Both were built and verified against a live `dsh web` (profile `web`), including
 hot-activation without restarting the server.
 
+## What it looks like
+
+A message that names a `.md` gets a row of clickable chips under it (directory
+muted, file name bold), and an image path this workspace really has renders as
+the image:
+
+![File chips and inline images](docs/chips-and-inline-images.png)
+
+Clicking a chip (or opening a `?preview=` link) renders the document in the panel
+on the right, with the shell's own Markdown renderer — maths, code highlighting,
+tables and footnotes exactly as in the chat, plus the document's own local
+images:
+
+![The Markdown preview panel](docs/preview-panel.png)
+
+Both are captures of the real GUI: the document is `logs/dsh-preview-demo.md` in
+the workspace, the image is the repository's own `images/ecmaster-zero.png`.
+
 ## Install
 
 ```sh

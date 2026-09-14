@@ -13,6 +13,18 @@
 
 两者都是在运行中的 `dsh web`（profile 为 `web`）上构建并验证的，包括无需重启服务器即可热激活。
 
+## 效果
+
+消息里提到 `.md`，下面就会出现一行可点的文件 chip（目录灰色、文件名加粗）；工作区里真实存在的图片路径，会直接渲染成图片：
+
+![文件 chip 与内联图片](docs/chips-and-inline-images.png)
+
+点 chip（或用 `?preview=` 链接）即在右侧面板渲染，用的是 shell 自带的 Markdown 渲染器，公式、代码高亮、表格、脚注都和聊天里一致，文档自身的本地图片也一起显示：
+
+![Markdown 预览面板](docs/preview-panel.png)
+
+两张图都截自真实运行的 GUI：演示文档是工作区里的 `logs/dsh-preview-demo.md`，图片是仓库里已有的 `images/ecmaster-zero.png`。
+
 ## 安装
 
 ```sh

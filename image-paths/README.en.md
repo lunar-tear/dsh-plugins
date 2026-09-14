@@ -65,6 +65,14 @@ workspace for 30 seconds, so a file that appears later is picked up.
 Paths glued to Chinese prose work (`见docs/x.png`); inline code (`` `docs/x.png` ``)
 and markdown image syntax (`![x](docs/x.png)`) are both mentions.
 
+## What it looks like
+
+![File chips and inline images](../docs/chips-and-inline-images.png)
+
+The lower half of that capture is this plugin's work: an image path written in a
+message renders as the image itself. (The file chip above it belongs to
+`dsh-markdown-preview`.)
+
 ## How it is built
 
 | Half | File | Role |

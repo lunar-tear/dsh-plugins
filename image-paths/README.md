@@ -61,6 +61,12 @@ DSH 检出目录里添加任何东西。
 紧贴中文的路径也能识别（`见docs/x.png`）；行内代码（`` `docs/x.png` ``）和 Markdown
 图片语法（`![x](docs/x.png)`）都算作一次提及。
 
+## 效果
+
+![文件 chip 与内联图片](../docs/chips-and-inline-images.png)
+
+上图下半部分是这张插件的手笔：消息里写到的图片路径，被渲染成真正的图片（上半部分的文件 chip 来自 `dsh-markdown-preview`）。
+
 ## 实现方式
 
 | 半边 | 文件 | 作用 |

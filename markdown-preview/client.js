@@ -115,8 +115,8 @@ var ZH = {
   'picker': '选择文件',
   'follow': '跟随对话',
   'manual': '工作区相对路径，例如 docs/design.md',
-  'mentioned': '对话里提到过',
-  'workspace': '工作区里的 Markdown',
+  'mentioned': '对话里提到过（点一条在这里打开）',
+  'workspace': '工作区里的 Markdown（点一条在这里打开）',
   'loading': '加载中…',
   'empty': '还没有可预览的文件：先让对话里出现一个 .md 路径，或在上面的输入框里填一个。',
   'notFound': '找不到这个文件（或它不在会话工作区内）。',
@@ -136,8 +136,8 @@ var EN = {
   'picker': 'Choose a file',
   'follow': 'Follow the conversation',
   'manual': 'Workspace-relative path, e.g. docs/design.md',
-  'mentioned': 'Mentioned in the conversation',
-  'workspace': 'Markdown in the workspace',
+  'mentioned': 'Mentioned in the conversation (click one to open it here)',
+  'workspace': 'Markdown in the workspace (click one to open it here)',
   'loading': 'Loading…',
   'empty': 'Nothing to preview yet: mention a .md path in the conversation, or type one above.',
   'notFound': 'No such file, or it is outside the session workspace.',
@@ -148,14 +148,26 @@ var EN = {
   'footnotes': 'Footnotes',
 }
 
-/** Inject the plugin's stylesheet once per document. */
+/** A cheap content hash, so a rebuilt bundle injects its own stylesheet revision. */
+function hashOf(text) {
+  var hash = 5381
+  for (var index = 0; index < text.length; index += 1) {
+    hash = ((hash * 33) ^ text.charCodeAt(index)) >>> 0
+  }
+  return hash.toString(36)
+}
+
+/**
+ * Inject this revision of the plugin's stylesheet.
+ *
+ * The tag is keyed by a hash of its own text: a hot-reloaded bundle would
+ * otherwise find the tag its previous revision left behind and inject nothing,
+ * leaving the page styled by code that no longer exists. Older revisions of
+ * this plugin's sheet are removed on the way in.
+ */
 function ensureStyles() {
   if (typeof document === "undefined") return
-  if (document.querySelector('style[data-plugin-css="markdown-preview"]') !== null) return
-  var tag = document.createElement("style")
-  tag.dataset.plugin = "markdown-preview"
-  tag.dataset.pluginCss = "markdown-preview"
-  tag.textContent = [
+  var css = [
     '.dsv-mp-btn{display:inline-flex;align-items:center;justify-content:center;height:28px;min-width:28px;padding:0 6px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary,#666);cursor:pointer;font:inherit}',
     '.dsv-mp-btn:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,#111)}',
     '.dsv-mp-btn[data-active="true"]{color:var(--dsw-alias-brand-primary,#2563eb);background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06))}',
@@ -167,8 +179,11 @@ function ensureStyles() {
     '.dsv-mp-picker{border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));padding:8px 10px;display:flex;flex-direction:column;gap:6px}',
     '.dsv-mp-input{width:100%;height:28px;padding:0 8px;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,#111);background:var(--dsw-alias-bg-base,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.15));border-radius:6px;box-sizing:border-box}',
     '.dsv-mp-list{max-height:32vh;overflow:auto;display:flex;flex-direction:column}',
+    /* Without this the capped column squeezes every row into a sliver, which
+       renders the whole list as a smear of clipped glyphs. */
+    '.dsv-mp-list>.dsv-mp-item{flex:0 0 auto;min-height:22px}',
     '.dsv-mp-group{font-size:11px;color:var(--dsw-alias-label-caption,#999);padding:6px 2px 2px}',
-    '.dsv-mp-item{display:block;width:100%;text-align:left;padding:4px 6px;border:0;background:transparent;border-radius:6px;font:inherit;font-size:12px;color:var(--dsw-alias-label-secondary,#444);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    '.dsv-mp-item{display:block;width:100%;text-align:left;padding:4px 6px;border:0;background:transparent;border-radius:6px;font:inherit;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#444);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.dsv-mp-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,#111)}',
     '.dsv-mp-note{padding:16px 4px;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#888)}',
     '.dsv-mp-grip{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize}',
@@ -178,6 +193,16 @@ function ensureStyles() {
     '.dsv-mp-chip-dir{color:var(--dsw-alias-label-tertiary,#999);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
     '.dsv-mp-chip-name{font-weight:600;white-space:nowrap}',
   ].join("\n")
+  var tagId = "markdown-preview:" + hashOf(css)
+  if (document.querySelector('style[data-plugin-css="' + tagId + '"]') !== null) return
+  var stale = document.querySelectorAll('style[data-plugin="markdown-preview"]')
+  for (var index = 0; index < stale.length; index += 1) {
+    if (stale[index].dataset.pluginCss !== tagId) stale[index].remove()
+  }
+  var tag = document.createElement("style")
+  tag.dataset.plugin = "markdown-preview"
+  tag.dataset.pluginCss = tagId
+  tag.textContent = css
   document.head.appendChild(tag)
 }
 
@@ -249,6 +274,32 @@ function collectMarkdownPaths(text) {
     if (paths.length >= MAX_MENTIONS) break
   }
   return paths
+}
+
+/** How deep a workspace-relative path sits in the tree. */
+function segmentsOf(path) {
+  return path.split("/").length
+}
+
+/**
+ * Directory names that hold somebody else's documentation: dependency trees,
+ * vendored copies and build output. They belong in the picker (the reader may
+ * want them) but never in the automatic fallback, which is where a build having
+ * just unpacked a vendored README would otherwise land.
+ */
+var DEPENDENCY_SEGMENTS = [
+  "node_modules", "vendor", "third_party", "thirdparty", "third_party_libs", "thirdparty_libs",
+  "external", "extern", "deps", "_deps", "subprojects", "installed", "site-packages",
+  "dist", "build", "out", "target", "venv",
+]
+
+/** Whether one row sits inside a dependency or build directory. */
+function isDependencyPath(path) {
+  var parts = path.split("/")
+  for (var index = 0; index < parts.length - 1; index += 1) {
+    if (DEPENDENCY_SEGMENTS.indexOf(parts[index]) !== -1) return true
+  }
+  return false
 }
 
 /** The basename of a workspace-relative path. */
@@ -536,6 +587,14 @@ function followTarget(current) {
     var chosen = firstListedMention()
     if (chosen !== null) return chosen
     if (usable(cache)) return cache
+    // The listing is newest-first, so the first shallow row is the newest
+    // document near the top of the tree. A vendored README that a build just
+    // unpacked is usually the newest file overall and the worst thing to open.
+    for (var shallow = 0; shallow < listed.length; shallow += 1) {
+      if (!usable(listed[shallow])) continue
+      if (isDependencyPath(listed[shallow])) continue
+      if (segmentsOf(listed[shallow]) <= 3) return listed[shallow]
+    }
     for (var index = 0; index < listed.length; index += 1) {
       if (usable(listed[index])) return listed[index]
     }
@@ -1070,6 +1129,8 @@ exports.apply = function apply(ctx) {
 exports.internals = {
   KIND: KIND,
   previewMention: previewMention,
+  segmentsOf: segmentsOf,
+  isDependencyPath: isDependencyPath,
   resolveListedPath: resolveListedPath,
   initialWidth: initialWidth,
   collectMarkdownPaths: collectMarkdownPaths,

@@ -70,6 +70,8 @@ const MAX_WALK_DEPTH = 6
 const SKIP_DIRECTORIES = new Set([
   'node_modules', 'dist', 'build', 'out', 'target', 'venv', 'vendor',
   '__pycache__', 'site-packages', 'third_party', 'thirdparty',
+  'third_party_libs', 'thirdparty_libs', 'external', 'extern', 'deps', '_deps',
+  'subprojects', 'installed',
 ])
 
 /**

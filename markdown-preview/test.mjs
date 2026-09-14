@@ -98,7 +98,8 @@ globalThis.localStorage = {
 const styles = []
 globalThis.document = {
   head: { appendChild: (tag) => styles.push(tag) },
-  createElement: () => ({ dataset: {}, textContent: '' }),
+  createElement: () => ({ dataset: {}, textContent: '', remove: () => {} }),
+  querySelectorAll: () => [],
   querySelector: () => null,
   visibilityState: 'visible',
   addEventListener: () => {},
@@ -267,6 +268,7 @@ assert.ok(dictionaries[0].dicts.en.title.length > 0, 'English copy ships')
 assert.equal(toggleRegistration.declaration.id, 'markdown-preview')
 assert.equal(overlayRegistration.declaration.id, 'markdown-preview')
 assert.ok(styles.length >= 1, 'the stylesheet is injected')
+assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), 'the tag is keyed by the sheet content, so a hot-reloaded bundle replaces it')
 
 // The Definition collects mentions in message order.
 {
@@ -353,11 +355,14 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   s.update({ rejected: ['docs/b.md', 'docs/c.md'] })
   assert.equal(s.followTarget(s.state()), null, 'with every row failed there is honestly nothing to show')
 
-  // No mention at all: the newest workspace file is shown, never an empty note.
+  // No mention at all: a document near the top of the tree is shown, never an
+  // empty note, and never a vendored README that a build just unpacked.
   s.reset()
   s.trackSession('s1', '/w')
-  ready(['newest.md', 'older.md'])
-  assert.equal(s.followTarget(s.state()), 'newest.md', 'the newest workspace Markdown is the fallback')
+  ready(['third_party_libs/x-1.0/README.md', 'docs/design/overview.md', 'readme.md'])
+  assert.equal(s.followTarget(s.state()), 'docs/design/overview.md', 'a shallow document wins over the newest deep one')
+  ready(['third_party_libs/x-1.0/README.md'])
+  assert.equal(s.followTarget(s.state()), 'third_party_libs/x-1.0/README.md', 'with nothing shallow the newest is still shown')
 
   // The listing unavailable: the remembered file first, then any mention.
   s.reset()

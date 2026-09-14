@@ -226,6 +226,7 @@ const { collectMarkdownPaths, resolveFromDocument, rewriteLocalImages, messageTe
 // apply(): registrations, the toggle button, and the drawer.
 let definition
 let toggleRegistration
+const chatNodeRegistrations = new Map()
 let overlayRegistration
 const dictionaries = []
 const ctx = {
@@ -240,6 +241,7 @@ const ctx = {
     register: (declaration, component) => {
       if (declaration.name === 'conversation.session.header.utilities') toggleRegistration = { declaration, component }
       if (declaration.name === 'shell.overlay') overlayRegistration = { declaration, component }
+      if (declaration.name === 'conversation.chat.node') chatNodeRegistrations.set(declaration.key, { declaration, component })
       return () => {}
     },
   },
@@ -259,7 +261,7 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
 {
   client.internals.reset()
   assert.equal(definition.kind, 'markdown-preview-mention')
-  assert.equal(definition.target, undefined, 'a state-only Definition publishes no node')
+  assert.equal(definition.target, 'chat', 'the Definition publishes the chips node')
   const event = {
     type: 'assistant/message',
     seq: 11,
@@ -360,6 +362,57 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   s.update({ filesStatus: 'loading' })
   s.mention('docs/a.md')
   assert.equal(s.followTarget(s.state()), null, 'while the listing loads the drawer says so rather than fetching a guess')
+}
+
+// The chips node: the placement contract, and the row itself.
+{
+  const { KIND } = client.internals
+  assert.ok(KIND.length >= 50 && KIND.length <= 59, 'the kind length puts the chips below the message')
+  const key = `${KIND.length}:${KIND}7`
+  assert.ok(key > '4:user7', 'sorts below a user message')
+  assert.ok(key > '14:assistant-step3:4', 'sorts below the assistant message')
+
+  const event = {
+    type: 'assistant/message',
+    seq: 21,
+    surfaceOp: 'append',
+    data: { message: { content: [{ type: 'text', text: '方案已写入 docs/implementation_plan.md，另外读了 packages/client/AGENTS.md' }] } },
+  }
+  const context = { key: `${KIND.length}:${KIND}21`, id: '21', matches: [], start: { event, location: { kind: 'step' } } }
+  const state = definition.start(context, { event, location: { kind: 'step' } })
+  const node = definition.buildViewNode({ ...context, state })
+  assert.equal(node.kind, KIND, 'the node carries the placement-carrying kind')
+  assert.equal(node.anchorSeq, 21)
+  assert.deepEqual(node.data.paths, ['docs/implementation_plan.md', 'packages/client/AGENTS.md'])
+  assert.equal(definition.buildViewNode({ ...context, state: { paths: [] } }), null, 'a message naming no Markdown publishes no node')
+
+  // The row only offers files the workspace listing confirms, so a chip always
+  // opens something. While the listing is not ready it renders nothing.
+  client.internals.reset()
+  const chipsRegistration = chatNodeRegistrations.get(KIND)
+  assert.ok(chipsRegistration !== undefined, 'the chips renderer is registered into the chat node seat')
+  const renderChips = (node) => render(chipsRegistration.component({ node, t: (key, params) => `${key}` }))
+
+  assert.equal(renderChips(node), null, 'no chips before the listing is ready')
+  client.internals.trackSession('s1', '/w')
+  client.internals.update({
+    filesStatus: 'ready',
+    files: [{ path: 'docs/implementation_plan.md' }],
+    filePaths: ['docs/implementation_plan.md'],
+  })
+  const row = renderChips(node)
+  assert.equal(row.type, 'div')
+  assert.equal(row.props.className, 'dsv-mp-chips')
+  assert.equal(row.children.length, 1, 'a path outside this workspace is not offered as a chip')
+  const chip = row.children[0]
+  assert.equal(chip.type, 'button')
+  const chipText = chip.children.flat().filter(Boolean).map((part) => (part.children ? part.children[0] : null))
+  assert.deepEqual(chipText, ['docs/', 'implementation_plan.md'], 'the chip shows the directory muted and the name bold')
+  chip.props.onClick()
+  const state2 = client.internals.state()
+  assert.equal(state2.open, true, 'clicking a chip opens the panel')
+  assert.equal(state2.path, 'docs/implementation_plan.md', 'on the file the chip named')
+  client.internals.update({ open: false })
 }
 
 // An explicit choice is remembered per workspace, and reopening prefers it.

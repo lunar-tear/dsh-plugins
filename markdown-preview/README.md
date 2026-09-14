@@ -12,8 +12,15 @@ added to the DSH checkout.
 
 ## Using it
 
-1. Click the preview toggle in the session header (the panel-with-document icon
-   beside the session utilities) — the drawer opens on the right.
+**Click a file chip.** A message that names a Markdown file gets a row of chips
+under it — `docs/` muted, `implementation_plan.md` bold — and clicking one opens
+that file in the panel. Only files the workspace confirms are offered, so a chip
+always opens something; a path the model quoted from another checkout stays out
+of the row instead of becoming a dead click. The same paths remain available
+from the panel's own file list.
+
+1. Or click the preview toggle in the session header (the panel-with-document
+   icon beside the session utilities) — the panel opens on the right.
 2. The file **follows the conversation**: every `.md` path the messages mention
    becomes a candidate, and the newest one that actually resolves is shown. So
    as you and the agent talk about `docs/design/overview.md`, it appears.
@@ -32,7 +39,7 @@ added to the DSH checkout.
 | Half | File | Role |
 |---|---|---|
 | Host | `index.js` | three read-only routes: Markdown text, image bytes, workspace `.md` listing |
-| Browser | `client.js` | a state-only Conversation Definition, the header toggle, and the overlay drawer |
+| Browser | `client.js` | a Conversation Definition that publishes the chips node and feeds the file list, a chat-node renderer for those chips, the header toggle, and the overlay drawer |
 
 Rendering reuses `MarkdownText` from `@deepseek-ai/dsh-client-ui-primitives` —
 the same component the chat uses — so this plugin owns no Markdown pipeline of
@@ -46,6 +53,12 @@ The plugin rewrites each local destination to the host's image route, resolved
 path escaping the workspace, an absolute path outside it — are left exactly as
 authored, so the reader sees the original text or the alt label rather than a
 broken image.
+
+The chips node's kind is 50-59 characters long on purpose: the Chat view breaks
+ties between nodes sharing an anchor sequence by comparing keys, a key is
+`<kind.length>:<kind><id>`, and every shipped kind keys with a digit below 5 —
+so that length is what puts the chips *below* the message that named the files.
+The test asserts it.
 
 Two placements matter, and both are the shipped extension points rather than
 new seams: the toggle registers into `conversation.session.header.utilities`
@@ -67,6 +80,12 @@ requests a browser marks as cross-site are refused. Non-browser callers send
 neither header and are trusted as loopback callers, the same trust the rest of
 the local GUI assumes. A deployment that binds the GUI to a non-loopback
 interface must widen `loopbackHost` in `index.js`.
+
+## What the chips do not do
+
+They do not replace the shipped inline-code file mentions, which still open a
+file in the Host editor. The chips are the *render* path; the inline mentions
+remain the *edit* path.
 
 ## Enable / disable
 

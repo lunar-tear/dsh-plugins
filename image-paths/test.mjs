@@ -34,14 +34,25 @@ function useHook() {
 }
 
 const React = {
-  createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
+  // React drops null/undefined children; this stub does too, so a conditional
+  // child does not shift the counts the assertions below make.
+  createElement: (type, props, ...children) => ({
+    type,
+    props: props ?? {},
+    children: children.flat().filter((child) => child !== null && child !== undefined),
+  }),
   Fragment: 'Fragment',
   useState: (initial) => {
     useHook()
     return [initial, () => {}]
   },
-  useEffect: () => {
+  // Effects run once and are cleaned up immediately: enough to exercise what a
+  // mount does (including the resolve lookup), without leaving a listener or an
+  // interval behind.
+  useEffect: (effect) => {
     useHook()
+    const cleanup = effect()
+    if (typeof cleanup === 'function') cleanup()
   },
 }
 
@@ -67,6 +78,30 @@ function render(node) {
   return render(rendered)
 }
 
+// A document stub: the lightbox effect and the caption need nothing else.
+globalThis.document = {
+  addEventListener: () => {},
+  removeEventListener: () => {},
+  visibilityState: 'visible',
+}
+
+const fetchCalls = []
+globalThis.fetch = (url, options) => {
+  fetchCalls.push({ url, options })
+  const target = String(url)
+  const verdict = target.includes('/resolve')
+    ? (target.includes('name=nope.png')
+      ? { found: false, reason: 'no such file' }
+      : { found: true, path: 'outputs/run7/retarget.png', matches: 3, truncated: false })
+    : { found: false }
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    headers: { get: () => '"1-2"' },
+    json: () => Promise.resolve(verdict),
+  })
+}
+
 await import('./client.js')
 assert.equal(loaded.id, 'dsh-image-paths', 'bundle registers under its package id')
 
@@ -87,10 +122,19 @@ const ctx = {
 client.apply(ctx)
 assert.equal(client.name, 'image-paths')
 assert.deepEqual(client.inject, ['uiConversation', 'slots'])
-assert.equal(registeredDefinition.kind, 'image-path-gallery')
+assert.equal(registeredDefinition.kind, client.internals.KIND, 'the registered kind is the placement-carrying one')
 assert.equal(typeof registeredView, 'function')
 
 const { collectImagePaths, messageOf } = client.internals
+
+// A bare filename is kept as an item to resolve, not dropped.
+{
+  const items = collectImagePaths('训练图 retarget.png 和 docs/a.png')
+  assert.deepEqual(items.map((item) => [item.path, item.bare]), [
+    ['retarget.png', true],
+    ['docs/a.png', false],
+  ], 'mention order, bare names flagged')
+}
 
 // Extraction: paths are taken, prose is not, remote URLs and fences are skipped.
 {
@@ -101,14 +145,17 @@ const { collectImagePaths, messageOf } = client.internals
     '```sh',
     'cat plots/inside-fence.png',
     '```',
-    '裸文件名 mobile软件.png 不算，因为它没有路径。',
+    '裸文件名 mobile软件.png 保留，交给 host 按文件名解析。',
   ].join('\n'))
   assert.deepEqual(items.map(item => item.path), [
     'docs/1产品介绍/images/mobile软件.png',
     'src/a/b.png',
     './docs/example.png',
+    'mobile软件.png',
   ])
   assert.equal(items[0].label, 'mobile软件.png', 'label is the basename')
+  assert.equal(items[0].bare, false, 'a path resolves on its own')
+  assert.equal(items[3].bare, true, 'a bare filename is resolved by the host')
 }
 
 // Markdown image syntax is an explicit mention, so a bare filename is accepted there.
@@ -125,51 +172,117 @@ const { collectImagePaths, messageOf } = client.internals
   assert.equal(many.length, 8, 'at most MAX_IMAGES per message')
 }
 
-// Message reading: only append-origin surface messages count.
+// The kind is the placement lever: keys sort as "<kind length>:<kind><id>", so
+// the gallery only lands below the message it belongs to while this name stays
+// 50 characters long.
 {
-  const assistant = {
-    type: 'assistant/message',
-    seq: 42,
-    surfaceOp: 'append',
-    data: { turn: 1, step: 2, message: { content: [{ type: 'text', text: 'see a/b.png' }, { type: 'reasoning', text: 'c/d.png' }] } },
-  }
-  const read = messageOf(assistant)
-  assert.deepEqual(read, { turn: 1, step: 2, text: 'see a/b.png' })
-  assert.equal(messageOf({ ...assistant, surfaceOp: 'replace' }), null, 'a replacement copy is not the reader transcript')
-  assert.equal(messageOf({ type: 'assistant/attempt', seq: 1, surfaceOp: 'append', data: {} }), null)
+  assert.equal(client.internals.KIND.length, 50, 'the kind length is what puts the gallery below its message')
+  const key = `${client.internals.KIND.length}:${client.internals.KIND}7`
+  assert.ok(key > '4:user7', 'sorts below a user message')
+  assert.ok(key > '14:assistant-step3:4', 'sorts below the assistant step node')
+  // No assertion against a tool row: it anchors at its call's sequence and this
+  // gallery at the result's, so the two never share an anchor to break the tie.
 }
 
-// Definition: match, start, and node materialization.
+// Text extraction: prose and reasoning both count, and tool results are text too.
 {
-  const event = {
+  const { contentText } = client.internals
+  const content = [
+    { type: 'reasoning', text: 'thinking about plots/a.png' },
+    { type: 'text', text: 'the answer' },
+    { type: 'tool-call', name: 'bash', arguments: '{}' },
+  ]
+  assert.equal(contentText(content), 'thinking about plots/a.png\nthe answer')
+  assert.equal(contentText(content, 'reasoning'), 'thinking about plots/a.png')
+  assert.equal(contentText(content, 'text'), 'the answer')
+  assert.equal(contentText(null), '')
+}
+
+// The Definition: one gallery per step, covering prose, reasoning and tool output.
+{
+  const definition = registeredDefinition
+  const message = (overrides) => ({
     type: 'assistant/message',
     seq: 42,
     surfaceOp: 'append',
-    data: { turn: 3, step: 4, message: { content: [{ type: 'text', text: '见 docs/1产品介绍/images/mobile软件.png' }] } },
-  }
-  assert.deepEqual(registeredDefinition.match(event), { id: '42', role: 'start' })
-  assert.equal(
-    registeredDefinition.match({ ...event, data: { turn: 3, step: 4, message: { content: [{ type: 'text', text: '没有图片' }] } } }),
-    null,
-    'a message without an image path produces no node',
+    data: { turn: 3, step: 4, message: { content: [{ type: 'text', text: '见 docs/a.png' }] } },
+    ...overrides,
+  })
+  assert.deepEqual(definition.match(message()), { id: 'a:3:4', role: 'start' })
+  assert.equal(definition.match({ ...message(), surfaceOp: 'replace' }), null, 'a replacement copy is not the reader transcript')
+  assert.equal(definition.match({ type: 'tool/call', seq: 1, surfaceOp: 'append', data: { turn: 3, step: 4 } }), null)
+  assert.deepEqual(
+    definition.match({ type: 'tool/result', seq: 43, surfaceOp: 'append', data: { turn: 3, step: 4, message: { content: [] } } }),
+    { id: 'a:3:4', role: 'update' },
+    'a tool result joins the step that asked for it',
   )
-  const context = {
-    key: '18:image-path-gallery42',
-    id: '42',
-    matches: [{ event, location: { kind: 'unresolved' } }],
-    start: { event, location: { kind: 'step' } },
-  }
-  const state = registeredDefinition.start(context, { event, location: { kind: 'step' } })
-  assert.equal(state.items.length, 1)
-  state.items = [] // start() derives items; the node is only materialized when some survive
-  assert.equal(registeredDefinition.buildViewNode({ ...context, state }), null)
+  assert.deepEqual(
+    definition.match({ type: 'user/message', seq: 9, surfaceOp: 'append', data: { content: [{ type: 'text', text: 'x' }] } }),
+    { id: 'm:9', role: 'start' },
+    'a user message owns its own gallery',
+  )
 
-  const live = registeredDefinition.start(context, { event, location: { kind: 'step' } })
-  const node = registeredDefinition.buildViewNode({ ...context, state: live })
-  assert.equal(node.kind, 'image-path-gallery')
-  assert.equal(node.anchorSeq, 42, 'the node anchors at its message')
+  const context = { key: `50:${client.internals.KIND}a:3:4`, id: 'a:3:4', matches: [], start: { event: message(), location: { kind: 'step' } } }
+
+  // A message with no image path still yields a Context; it just materializes no node.
+  const plain = definition.start(context, { event: message({ data: { turn: 3, step: 4, message: { content: [{ type: 'text', text: '没有图片' }] } } }) })
+  assert.equal(definition.buildViewNode({ ...context, state: plain }), null, 'no path, no node')
+
+  // Reasoning counts, and it is scanned from the same message.
+  const thinking = definition.start(context, {
+    event: message({ data: { turn: 3, step: 4, message: { content: [
+      { type: 'reasoning', text: 'plot 落在 outputs/run7/curve.png' },
+      { type: 'text', text: 'done' },
+    ] } } }),
+  })
+  assert.deepEqual(thinking.items.map((item) => item.path), ['outputs/run7/curve.png'], 'a path in the thinking is an image too')
+
+  // A tool result adds to the same step, and the node follows the latest evidence.
+  const withTool = definition.update(
+    { ...context, state: definition.start(context, { event: message() }) },
+    { event: { type: 'tool/result', seq: 51, surfaceOp: 'append', data: { turn: 3, step: 4, message: { content: [{ type: 'text', text: 'saved logs/figures/sweep.png' }] } } } },
+  )
+  assert.deepEqual(withTool.items.map((item) => item.path), ['docs/a.png', 'logs/figures/sweep.png'])
+  const node = definition.buildViewNode({ ...context, state: withTool })
+  assert.equal(node.kind, client.internals.KIND)
+  assert.equal(node.anchorSeq, 51, 'the node anchors at the last contributing event')
   assert.equal(node.visibility, 'visible')
-  assert.equal(node.data.items.length, 1)
+  assert.equal(node.data.items.length, 2)
+
+  // A huge tool result is scanned within a budget rather than in full.
+  const huge = definition.update(
+    { ...context, state: definition.start(context, { event: message() }) },
+    { event: { type: 'tool/result', seq: 52, surfaceOp: 'append', data: { turn: 3, step: 4, message: { content: [
+      { type: 'text', text: `${'x'.repeat(25000)} tail/too-late.png` },
+    ] } } } },
+  )
+  assert.deepEqual(huge.items.map((item) => item.path), ['docs/a.png'], 'a path past the scan budget is not picked up')
+}
+
+// Rendering a bare filename: the host resolves it, and the caption says which
+// file the token actually meant.
+{
+  const bare = { data: { items: [{ path: 'retarget.png', label: 'retarget.png', bare: true }] } }
+  const pending = render(registeredView({ node: bare, cwd: '/w', t: (key) => key }))
+  assert.equal(render(pending.children[0]), null, 'no picture renders while the name is unresolved')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(fetchCalls.some((call) => String(call.url).startsWith('/plugin/image-paths/resolve')), 'the lookup went to the host route')
+  const tree = render(registeredView({ node: bare, cwd: '/w', t: (key) => key }))
+  const column = render(tree.children[0])
+  assert.equal(column.children[0].type, 'img')
+  assert.equal(
+    column.children[0].props.src,
+    '/plugin/image-paths/raw?path=outputs%2Frun7%2Fretarget.png&cwd=%2Fw',
+    'the picture serves the path the host resolved',
+  )
+  assert.equal(column.children[1].children[0], 'retarget.png → outputs/run7/retarget.png', 'an ambiguous name says which file it picked')
+
+  const missing = { data: { items: [{ path: 'nope.png', label: 'nope.png', bare: true }] } }
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  render(registeredView({ node: missing, cwd: '/w', t: (key) => key }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const gone = render(registeredView({ node: missing, cwd: '/w', t: (key) => key }))
+  assert.equal(render(gone.children[0]), null, 'an unresolvable name renders no picture')
 }
 
 // Rendering: one <img> per item, pointing at the host route.
@@ -177,8 +290,11 @@ const { collectImagePaths, messageOf } = client.internals
   const node = { data: { items: [{ path: 'docs/1产品介绍/images/mobile软件.png', label: 'mobile软件.png' }] } }
   const tree = render(registeredView({ node, cwd: '/w', loadImage: async () => '', t: (key) => key }))
   assert.equal(tree.children.length, 1)
-  const img = render(tree.children[0])
+  const column = render(tree.children[0])
+  assert.equal(column.type, 'div', 'each image sits in its own column so a caption can follow it')
+  const img = column.children[0]
   assert.equal(img.type, 'img')
+  assert.equal(column.children.length, 1, 'a path with a directory needs no caption')
   assert.equal(
     img.props.src,
     '/plugin/image-paths/raw?path=docs%2F1%E4%BA%A7%E5%93%81%E4%BB%8B%E7%BB%8D%2Fimages%2Fmobile%E8%BD%AF%E4%BB%B6.png&cwd=%2Fw',

@@ -54,6 +54,18 @@ if [ ! -d "$PROFILE_DIR" ]; then
   exit 1
 fi
 
+# One plugin's version, used as the row URL's cache key.
+package_version() {
+  local manifest="$REPO_DIR/$1/package.json"
+  local version
+  version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$manifest" | head -1)"
+  if [ -z "$version" ]; then
+    echo "cannot read a version from $manifest" >&2
+    exit 1
+  fi
+  printf '%s' "$version"
+}
+
 # The patch without any block this script previously wrote, so a re-install is
 # idempotent and an uninstall keeps whatever else the user has in the layer.
 patch_without_managed_block() {
@@ -91,10 +103,15 @@ install_rows() {
 
 $BEGIN_MARK"
   for index in "${!IDS[@]}"; do
+    # The ?v= query is the host half's cache key: Node caches ES modules per
+    # URL, so a changed index.js only loads when the URL changes. Taking it from
+    # the package version makes "bump the version, re-install" the whole ritual.
+    local version
+    version="$(package_version "${DIRS[$index]}")"
     next="$next
 - insert:
     - id: ${IDS[$index]}
-      name: 'file://$PLUGIN_HOME/${PACKAGES[$index]}/index.js'"
+      name: 'file://$PLUGIN_HOME/${PACKAGES[$index]}/index.js?v=$version'"
   done
   next="$next
 $END_MARK"

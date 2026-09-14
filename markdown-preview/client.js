@@ -38,12 +38,23 @@ var useMemo = React.useMemo
 
 /** Locale namespace owned by this plugin. */
 var NS = "markdown-preview"
+/**
+ * Chat node kind for the file chips. Like the image gallery's kind, its length
+ * is load-bearing: the Chat view breaks ties between nodes sharing an anchor
+ * sequence by comparing keys, a key is `<kind.length>:<kind><id>`, and every
+ * shipped kind keys with a digit below 5 — so this 50-character name is what
+ * puts the chips *below* the message that named the files: the kind must stay
+ * 50-59 characters long (so its key starts with "5"), and the test asserts it.
+ */
+var KIND = "markdown-preview-file-chips-under-the-message-block"
 /** Routes served by the host half. */
 var FILE_ROUTE = "/plugin/markdown-preview/file"
 var IMAGE_ROUTE = "/plugin/markdown-preview/image"
 var FIND_ROUTE = "/plugin/markdown-preview/find"
 /** Mentioned files remembered for the picker. */
 var MAX_MENTIONS = 12
+/** Chips offered under one message. */
+var MAX_CHIPS = 4
 /** How often an open preview revalidates the file it shows. */
 var POLL_MS = 2500
 /** Prefix of the per-workspace key remembering the file last shown. */
@@ -66,6 +77,7 @@ var MD_IMAGE = /!\[([^\]]*)\]\(\s*<?([^)\s<>]+)>?([^)]*)\)/g
 /** Plugin copy, both shipped locales. */
 var ZH = {
   'title': 'Markdown 预览',
+  'openFile': '在预览面板里打开 {path}',
   'open': '打开 Markdown 预览',
   'close': '关闭',
   'refresh': '刷新',
@@ -86,6 +98,7 @@ var ZH = {
 
 var EN = {
   'title': 'Markdown preview',
+  'openFile': 'Open {path} in the preview panel',
   'open': 'Open the Markdown preview',
   'close': 'Close',
   'refresh': 'Refresh',
@@ -128,6 +141,11 @@ function ensureStyles() {
     '.dsv-mp-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,#111)}',
     '.dsv-mp-note{padding:16px 4px;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#888)}',
     '.dsv-mp-grip{position:absolute;left:-3px;top:0;bottom:0;width:6px;cursor:col-resize}',
+    '.dsv-mp-chips{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px}',
+    '.dsv-mp-chip{display:inline-flex;align-items:center;gap:2px;max-width:100%;padding:3px 8px;border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.14));border-radius:999px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#111);cursor:pointer;font:inherit;font-size:12px;line-height:1.5}',
+    '.dsv-mp-chip:hover{border-color:var(--dsw-alias-brand-primary,#2563eb);color:var(--dsw-alias-brand-primary,#2563eb)}',
+    '.dsv-mp-chip-dir{color:var(--dsw-alias-label-tertiary,#999);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+    '.dsv-mp-chip-name{font-weight:600;white-space:nowrap}',
   ].join("\n")
   document.head.appendChild(tag)
 }
@@ -537,7 +555,11 @@ function PreviewToggle(props) {
     return snapshot.byId[sessionId] === undefined ? null : (snapshot.byId[sessionId].cwd || null)
   })
   useEffect(function () {
-    if (sessionId !== undefined) trackSession(sessionId, cwd === undefined ? null : cwd)
+    if (sessionId === undefined) return
+    trackSession(sessionId, cwd === undefined ? null : cwd)
+    // The chips row consults this listing, so it is loaded with the session
+    // rather than only when the drawer opens.
+    loadListing(cwd === undefined ? null : cwd)
   }, [sessionId, cwd])
   var open = plugin.open
   return h(
@@ -781,6 +803,7 @@ function DragHandle() {
 /** The state-only Definition that remembers which Markdown files the messages name. */
 var mentionDefinition = {
   kind: "markdown-preview-mention",
+  target: "chat",
   match: function (event) {
     var text = messageText(event)
     if (text === null || text.length === 0) return null
@@ -796,6 +819,70 @@ var mentionDefinition = {
     return { paths: paths }
   },
   update: function (context) { return context.state },
+  buildViewNode: function (context) {
+    var state = context.state
+    if (state === undefined || state.paths.length === 0) return null
+    var start = context.start
+    return {
+      key: context.key,
+      kind: KIND,
+      id: context.id,
+      target: "chat",
+      anchorSeq: start !== null && start !== undefined ? start.event.seq : 0,
+      location: start !== null && start !== undefined ? start.location : { kind: "unresolved" },
+      visibility: "visible",
+      data: { paths: state.paths },
+    }
+  },
+}
+
+/**
+ * The chips row: one clickable chip per Markdown file the message named.
+ *
+ * Only files the workspace listing confirms are offered, so a chip always opens
+ * something — a path the model wrote from another checkout stays out of the row
+ * rather than becoming a dead click. While the listing is still loading the row
+ * renders nothing rather than guessing.
+ * @param props - the routed node plus this plugin's translate seat.
+ * @returns the chips, or null when nothing in the message is openable here.
+ */
+function MarkdownFileChips(props) {
+  var plugin = usePluginState()
+  var t = props.t
+  var node = props.node
+  var paths = node !== undefined && node.data !== undefined && Array.isArray(node.data.paths) ? node.data.paths : []
+  if (paths.length === 0) return null
+  if (plugin.filesStatus !== "ready" || plugin.filePaths.length === 0) return null
+  var openable = []
+  for (var index = 0; index < paths.length; index += 1) {
+    if (plugin.filePaths.indexOf(paths[index]) !== -1 && openable.indexOf(paths[index]) === -1) openable.push(paths[index])
+    if (openable.length >= MAX_CHIPS) break
+  }
+  if (openable.length === 0) return null
+  return h(
+    "div",
+    { className: "dsv-mp-chips" },
+    openable.map(function (path) {
+      var cut = path.lastIndexOf("/")
+      var dir = cut === -1 ? "" : path.slice(0, cut + 1)
+      var name = cut === -1 ? path : path.slice(cut + 1)
+      return h(
+        "button",
+        {
+          key: "chip:" + path,
+          type: "button",
+          className: "dsv-mp-chip",
+          title: t("openFile", { path: path }),
+          onClick: function () {
+            selectPath(path)
+            update({ open: true })
+          },
+        },
+        dir === "" ? null : h("span", { className: "dsv-mp-chip-dir" }, dir),
+        h("span", { className: "dsv-mp-chip-name" }, name),
+      )
+    }),
+  )
 }
 
 /** Required services: the Definition registry, the slots, and the dictionaries. */
@@ -817,6 +904,11 @@ exports.apply = function apply(ctx) {
   ensureStyles()
 
   ctx.uiConversation.events.register(mentionDefinition)
+  ctx.slots.inject("conversation.chat.node", function () {
+    return ctx.slots.register({ name: "conversation.chat.node", key: KIND }, function (props) {
+      return h(MarkdownFileChips, Object.assign({}, props, { t: t }))
+    })
+  })
 
   ctx.slots.inject("conversation.session.header.utilities", function () {
     return ctx.slots.register(
@@ -834,6 +926,7 @@ exports.apply = function apply(ctx) {
 
 /** Test seam: the bundle has no build step, so a spec drives the pure parts directly. */
 exports.internals = {
+  KIND: KIND,
   collectMarkdownPaths: collectMarkdownPaths,
   resolveFromDocument: resolveFromDocument,
   rewriteLocalImages: rewriteLocalImages,

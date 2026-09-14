@@ -1,21 +1,39 @@
 # dsh-image-paths
 
-Renders a local image path written in a chat message as the picture itself, right
-under that message. Both halves are plain JavaScript — no build step, no
-`node_modules`, nothing added to the DSH checkout.
+Renders a local image path written anywhere in the conversation as the picture
+itself, right below the content that named it. Both halves are plain JavaScript —
+no build step, no `node_modules`, nothing added to the DSH checkout.
 
 ## What it does
 
-`write` a workspace-relative image path in your reply, and the image appears:
+Write a workspace-relative image path — in your reply, in your thinking, or as
+the output of a tool — and the image appears:
 
 ```markdown
 改完了，对比图见 docs/1产品介绍/images/mobile软件.png
 ```
 
-The gallery renders under that message. Click a thumbnail for the original
-(Escape, or a click anywhere, closes it). It works for a message you send too,
-and it works retroactively: every message already in the loaded history gets its
-gallery, not just new ones.
+Everywhere an image path can show up in the transcript is scanned:
+
+| Source | Example |
+|---|---|
+| The assistant's reply | `对比图见 outputs/run7/curve.png` |
+| **The model's reasoning / thinking** | a path written while working the problem out |
+| **Tool output** | a script that printed `saved logs/figures/sweep.png`, `ls`, `grep` results |
+| Your own message | pasting a path instead of the file |
+| Markdown image syntax and inline code | `![x](figure.png)`, `` `docs/x.png` `` |
+| **A bare filename** | `retarget.png` with no directory — see below |
+
+One gallery per **conversation step** — the assistant message and the tool
+results it asked for — anchored at the last event that contributed, so the
+gallery sits at the end of that step's content instead of drifting while the
+step runs. A message *you* send gets its own gallery attached to that message,
+so it stays put while the reply streams in below.
+
+Click a thumbnail for the original (Escape, or a click anywhere, closes it). It
+works retroactively: everything already in the loaded history gets its gallery,
+not just new events. At most 8 images per gallery, and at most 20,000 characters
+scanned per fragment, so a megabyte-sized tool log cannot slow the chat down.
 
 ## What it deliberately ignores
 
@@ -23,9 +41,24 @@ gallery, not just new ones.
 |---|---|
 | `` ```fenced``` `` code blocks | transcripts and examples, not disclosures |
 | `http(s)://…/x.png` | a remote image is not a local file |
-| a bare filename with no `/` in prose | it would have to be resolved against the workspace root by guess; use `docs/x.png`, or the explicit `![x](x.png)` form |
 | `~/…` paths | the route only serves files inside the session workspace |
 | a path that does not resolve | the thumbnail removes itself instead of showing a broken image |
+
+### Bare filenames
+
+A name with no directory (`retarget.png`, the way a model usually refers to a
+figure it just produced) is resolved by the host against the workspace:
+
+- **exactly one file matches** → that file is shown;
+- **several match** (the common case once a project keeps one directory per run)
+  → the **newest** is shown, and the caption under the thumbnail names the file
+  it actually resolved to (`retarget.png → outputs/run7/retarget.png`), so a
+  wrong run's figure is visible as such rather than silently passed off;
+- **nothing matches** → nothing is shown.
+
+The lookup answers `200` with a verdict either way, so a name that resolves to
+nothing leaves no failed request in the browser console. Results are cached per
+workspace for 30 seconds, so a file that appears later is picked up.
 
 Paths glued to Chinese prose work (`见docs/x.png`); inline code (`` `docs/x.png` ``)
 and markdown image syntax (`![x](docs/x.png)`) are both mentions.
@@ -34,8 +67,15 @@ and markdown image syntax (`![x](docs/x.png)`) are both mentions.
 
 | Half | File | Role |
 |---|---|---|
-| Host | `index.js` | one read-only route, `GET /plugin/image-paths/raw?path=…&cwd=…`, that serves a single image file |
-| Browser | `client.js` | a Conversation Definition (`image-path-gallery`, target `chat`) plus the Chat node view that renders the thumbnails |
+| Host | `index.js` | two read-only routes: `GET …/raw?path=…&cwd=…` serves one image file, and `GET …/resolve?name=…&cwd=…` turns a bare filename into the file it means (bounded, cached workspace walk) |
+| Browser | `client.js` | a Conversation Definition, keyed per step (and per user message), plus the Chat node view that renders the thumbnails |
+
+The node kind's own **length** is a load-bearing detail: the Chat view breaks
+ties between nodes sharing an anchor sequence by comparing keys, a key is
+`<kind.length>:<kind><id>`, and every shipped kind's key starts with a digit
+below 5 — so the 50-character kind here is what makes the gallery land *below*
+the message it belongs to rather than above it. Renaming it without keeping it
+50 characters long silently reorders the gallery, which the test asserts.
 
 Why a route instead of a durable session event: the shipped client can only read
 image bytes through an **attachment referenced by a session event**, and an

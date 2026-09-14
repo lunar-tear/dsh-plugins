@@ -21,7 +21,7 @@
  */
 
 import { createReadStream, promises as fs } from 'node:fs'
-import { extname, isAbsolute, resolve, sep } from 'node:path'
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { pipeline } from 'node:stream/promises'
 
 /** Cordis plugin name. */
@@ -32,12 +32,32 @@ export const inject = ['webServer']
 
 /** Route prefix owned by this plugin; the client appends `/raw` semantics itself. */
 export const ROUTE = '/plugin/image-paths/raw'
+/**
+ * Basename lookup route: the fallback for a path a message only named, e.g.
+ * `retarget.png` with no directory. Always answers 200 with a JSON verdict, so
+ * a name that cannot be resolved costs no failed request in the browser console.
+ */
+export const RESOLVE_ROUTE = '/plugin/image-paths/resolve'
 
 /** Refuse anything larger than this: the browser only ever shows a preview. */
 const MAX_BYTES = 32 * 1024 * 1024
 
 /** Refuse pathologically long inputs before touching the filesystem. */
 const MAX_PATH_CHARS = 4096
+
+/** Directory entries visited by one basename index walk. */
+const MAX_WALK_ENTRIES = 6000
+/** Directory depth visited by one basename index walk. */
+const MAX_WALK_DEPTH = 6
+/** How long a workspace basename index is reused. */
+const INDEX_TTL_MS = 15000
+/** Image extensions a basename lookup may resolve to. */
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
+/** Directories a basename walk never enters: dependencies, builds, VCS. */
+const SKIP_DIRECTORIES = new Set([
+  'node_modules', 'dist', 'build', 'out', 'target', 'venv', 'vendor',
+  '__pycache__', 'site-packages', 'third_party', 'thirdparty',
+])
 
 /** Extension → the media type that extension must then prove with its magic bytes. */
 export const DECLARED_MEDIA_TYPES = new Map([
@@ -201,6 +221,141 @@ function refuse(res, status, reason) {
   res.end(body)
 }
 
+/** Cached basename index per workspace root: one bounded walk serves many lookups. */
+const indexCache = new Map()
+
+/**
+ * Index a workspace's image files by basename, newest first, with a bounded
+ * walk: at most {@link MAX_WALK_ENTRIES} entries, {@link MAX_WALK_DEPTH}
+ * levels, no build or dependency directory, no dot-directory, and no symlink
+ * (a `Dirent` for one is neither a file nor a directory here).
+ * @param root - the resolved workspace root.
+ * @returns basename → rows, newest first, plus whether the walk hit its bound.
+ */
+export async function indexImages(root) {
+  const cached = indexCache.get(root)
+  if (cached !== undefined && Date.now() - cached.at < INDEX_TTL_MS) return cached.index
+  const byName = new Map()
+  const queue = [{ dir: root, depth: 0 }]
+  let visited = 0
+  let truncated = false
+  while (queue.length > 0) {
+    const current = queue.shift()
+    let entries
+    try {
+      entries = await fs.readdir(current.dir, { withFileTypes: true })
+    } catch {
+      continue
+    }
+    for (const entry of entries) {
+      visited += 1
+      if (visited > MAX_WALK_ENTRIES) {
+        truncated = true
+        break
+      }
+      const full = join(current.dir, entry.name)
+      if (entry.isDirectory()) {
+        if (current.depth >= MAX_WALK_DEPTH) continue
+        if (entry.name.startsWith('.') || SKIP_DIRECTORIES.has(entry.name)) continue
+        queue.push({ dir: full, depth: current.depth + 1 })
+        continue
+      }
+      if (!entry.isFile()) continue
+      if (!IMAGE_EXTENSIONS.has(extname(entry.name).toLowerCase())) continue
+      let stat
+      try {
+        stat = await fs.stat(full)
+      } catch {
+        continue
+      }
+      const rows = byName.get(entry.name) ?? []
+      rows.push({ path: full, mtime: Math.round(stat.mtimeMs), size: stat.size })
+      byName.set(entry.name, rows)
+    }
+    if (truncated) break
+  }
+  for (const rows of byName.values()) rows.sort((left, right) => right.mtime - left.mtime)
+  const index = { byName, truncated }
+  indexCache.set(root, { at: Date.now(), index })
+  return index
+}
+
+/**
+ * Resolve a bare image filename inside one workspace.
+ *
+ * A name that matches exactly one file resolves to it. A name that matches
+ * several resolves to the **newest** match and reports how many there were, so
+ * the reader is shown a picture plus the path it actually came from rather than
+ * a silently wrong run's figure; the caller decides how loudly to say so.
+ * @param root - the resolved workspace root.
+ * @param name - the bare filename, without a directory.
+ * @returns the verdict the route serializes.
+ */
+export async function resolveByName(root, name) {
+  if (typeof name !== 'string' || name.length === 0 || name.length > MAX_PATH_CHARS) {
+    return { found: false, reason: 'missing or overlong name' }
+  }
+  if (name.includes('/') || name.includes('\\') || name.includes('\0')) {
+    return { found: false, reason: 'not a bare filename' }
+  }
+  if (!IMAGE_EXTENSIONS.has(extname(name).toLowerCase())) {
+    return { found: false, reason: 'not a supported image extension' }
+  }
+  const index = await indexImages(root)
+  const rows = index.byName.get(name)
+  if (rows === undefined || rows.length === 0) return { found: false, reason: 'no such file' }
+  const newest = rows[0]
+  return {
+    found: true,
+    path: relative(root, newest.path).split(sep).join('/'),
+    absolute: newest.path,
+    matches: rows.length,
+    truncated: index.truncated,
+  }
+}
+
+/**
+ * Answer one basename lookup. Always 200 with a verdict, so a name that does
+ * not resolve leaves no failed request in the browser console.
+ * @param req - the incoming request.
+ * @param res - the response this handler owns end to end.
+ */
+export async function serveResolve(req, res) {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    refuse(res, 405, 'method not allowed')
+    return
+  }
+  if (!sameOrigin(req)) {
+    refuse(res, 403, 'cross-site request refused')
+    return
+  }
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+  const cwd = url.searchParams.get('cwd') ?? ''
+  if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > MAX_PATH_CHARS || !isAbsolute(cwd)) {
+    refuse(res, 400, 'missing or non-absolute workspace root')
+    return
+  }
+  let root
+  try {
+    root = await fs.realpath(cwd)
+  } catch {
+    refuse(res, 400, 'workspace root is not readable')
+    return
+  }
+  const verdict = await resolveByName(root, url.searchParams.get('name') ?? '')
+  const body = Buffer.from(JSON.stringify(verdict), 'utf8')
+  res.writeHead(200, {
+    'content-type': 'application/json; charset=utf-8',
+    'content-length': String(body.byteLength),
+    'cache-control': 'no-store',
+  })
+  if (req.method === 'HEAD') {
+    res.end()
+    return
+  }
+  res.end(body)
+}
+
 /**
  * Serve one image request.
  * @param req - the incoming request (method, URL, and cross-site headers).
@@ -251,5 +406,9 @@ export function apply(ctx) {
   ctx.effect(
     () => ctx.webServer.register({ kind: 'prefix', path: ROUTE, handler: serveImage }),
     'image-paths: image route',
+  )
+  ctx.effect(
+    () => ctx.webServer.register({ kind: 'prefix', path: RESOLVE_ROUTE, handler: serveResolve }),
+    'image-paths: basename route',
   )
 }

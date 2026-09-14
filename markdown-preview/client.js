@@ -46,6 +46,8 @@ var FIND_ROUTE = "/plugin/markdown-preview/find"
 var MAX_MENTIONS = 12
 /** How often an open preview revalidates the file it shows. */
 var POLL_MS = 2500
+/** How long a workspace Markdown listing is reused before it is fetched again. */
+var LISTING_TTL_MS = 15000
 /** Drawer width bounds, in px. */
 var MIN_WIDTH = 320
 var MAX_WIDTH = 900
@@ -275,6 +277,14 @@ var INITIAL = {
   mentioned: [],
   rejected: [],
   width: DEFAULT_WIDTH,
+  /** Workspace Markdown listing: `{ path, size, mtime }` rows plus their paths. */
+  files: [],
+  filePaths: [],
+  filesStatus: "idle",
+  filesTruncated: false,
+  filesCwd: null,
+  filesAt: 0,
+  filesPending: null,
 }
 
 var state = INITIAL
@@ -314,11 +324,58 @@ function selectPath(path) {
 
 /** The newest mentioned path that has not already failed to load. */
 function followTarget(current) {
+  // A mention the workspace listing knows about is followed first: a path the
+  // model wrote in prose often names a file that lives somewhere else (another
+  // checkout, a document that only exists in the abstract), and following it
+  // would spend a request to learn what the listing already says.
+  var listed = current.filePaths
+  if (listed !== undefined && listed.length > 0) {
+    for (var listedIndex = 0; listedIndex < current.mentioned.length; listedIndex += 1) {
+      var known = current.mentioned[listedIndex]
+      if (current.rejected.indexOf(known) === -1 && listed.indexOf(known) !== -1) return known
+    }
+  }
   for (var index = 0; index < current.mentioned.length; index += 1) {
     var candidate = current.mentioned[index]
     if (current.rejected.indexOf(candidate) === -1) return candidate
   }
   return null
+}
+
+/**
+ * Refresh the workspace Markdown listing once per workspace, for the picker and
+ * for telling a real mention apart from a path that only looks like one.
+ * @param cwd - the workspace root, or null while unknown.
+ */
+function loadListing(cwd) {
+  if (cwd === null || cwd === undefined) return
+  var now = Date.now()
+  if (state.filesCwd === cwd && now - state.filesAt < LISTING_TTL_MS) return
+  if (state.filesPending) return
+  if (state.filesCwd !== cwd) update({ filesCwd: cwd, files: [], filePaths: [], filesStatus: "loading", filesTruncated: false })
+  else update({ filesStatus: "loading" })
+  var request = fetch(FIND_ROUTE + "?cwd=" + encodeURIComponent(cwd), { cache: "no-store" })
+    .then(function (response) {
+      if (!response.ok) throw new Error(String(response.status))
+      return response.json()
+    })
+    .then(function (body) {
+      var files = body.files || []
+      update({
+        files: files,
+        filePaths: files.map(function (entry) { return entry.path }),
+        filesStatus: "ready",
+        filesTruncated: body.truncated === true,
+        filesAt: Date.now(),
+      })
+    })
+    .catch(function () {
+      update({ filesStatus: "failed", files: [], filePaths: [], filesAt: Date.now() })
+    })
+    .then(function () {
+      if (state.filesPending === request) update({ filesPending: null })
+    })
+  update({ filesPending: request })
 }
 
 /** Subscribe one component to the plugin state. */
@@ -453,28 +510,9 @@ function FilePicker(props) {
   var draftPair = useState("")
   var draft = draftPair[0]
   var setDraft = draftPair[1]
-  var filesPair = useState({ status: "idle", files: [], truncated: false })
-  var files = filesPair[0]
-  var setFiles = filesPair[1]
-
-  useEffect(function () {
-    if (!props.open || plugin.cwd === null) return undefined
-    var cancelled = false
-    setFiles({ status: "loading", files: [], truncated: false })
-    fetch(FIND_ROUTE + "?cwd=" + encodeURIComponent(plugin.cwd), { cache: "no-store" })
-      .then(function (response) {
-        if (!response.ok) throw new Error(String(response.status))
-        return response.json()
-      })
-      .then(function (body) {
-        if (cancelled) return
-        setFiles({ status: "ready", files: body.files || [], truncated: body.truncated === true })
-      })
-      .catch(function () {
-        if (!cancelled) setFiles({ status: "failed", files: [], truncated: false })
-      })
-    return function () { cancelled = true }
-  }, [props.open, plugin.cwd])
+  // The listing itself lives in the plugin state: the drawer's own open effect
+  // loads it, and the picker only reads it.
+  var files = plugin.files
 
   function choose(path) {
     selectPath(path)
@@ -514,14 +552,14 @@ function FilePicker(props) {
       )
       : null,
     h("div", { className: "dsv-mp-group" }, t("workspace")),
-    files.status === "loading" ? h("div", { className: "dsv-mp-note" }, t("loading")) : null,
-    files.status === "failed" ? h("div", { className: "dsv-mp-note" }, t("failed")) : null,
-    files.status === "ready" && files.files.length === 0 ? h("div", { className: "dsv-mp-note" }, t("empty")) : null,
-    files.status === "ready" && files.files.length > 0
+    plugin.filesStatus === "loading" ? h("div", { className: "dsv-mp-note" }, t("loading")) : null,
+    plugin.filesStatus === "failed" ? h("div", { className: "dsv-mp-note" }, t("failed")) : null,
+    plugin.filesStatus === "ready" && files.length === 0 ? h("div", { className: "dsv-mp-note" }, t("empty")) : null,
+    files.length > 0
       ? h(
         "div",
         { className: "dsv-mp-list" },
-        files.files.map(function (entry) {
+        files.map(function (entry) {
           return h(
             "button",
             { key: "file:" + entry.path, type: "button", className: "dsv-mp-item", title: entry.path, onClick: function () { choose(entry.path) } },
@@ -530,7 +568,7 @@ function FilePicker(props) {
         }),
       )
       : null,
-    files.truncated ? h("div", { className: "dsv-mp-note" }, t("truncated")) : null,
+    plugin.filesTruncated ? h("div", { className: "dsv-mp-note" }, t("truncated")) : null,
   )
 }
 
@@ -556,7 +594,14 @@ function PreviewDrawer(props) {
     if (!plugin.open || !plugin.follow || plugin.manual) return
     var target = followTarget(plugin)
     if (target !== plugin.path) update({ path: target })
-  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentioned, plugin.rejected, plugin.path])
+  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentioned, plugin.rejected, plugin.path, plugin.filePaths])
+
+  // The workspace listing is what tells a mention apart from a path that only
+  // looks like one, so following loads it as soon as the drawer opens.
+  useEffect(function () {
+    if (!plugin.open) return
+    loadListing(plugin.cwd)
+  }, [plugin.open, plugin.cwd])
 
   var current = useMarkdownFile(plugin.cwd, plugin.path, noncePair[0])
   var docPath = plugin.path
@@ -569,14 +614,18 @@ function PreviewDrawer(props) {
     reject(docPath)
   }, [current.status, docPath, plugin.follow, plugin.manual])
 
-  if (!plugin.open) return null
-
+  // Every hook must run before the closed-state return below: a hook placed
+  // after it would make the first open render call one hook more than the
+  // closed render did, which React rejects as "rendered more hooks than
+  // during the previous render" (#310).
   var labels = useMemo(function () {
     return {
       code: { copyLabel: t("code.copy"), copiedLabel: t("code.copied") },
       footnotes: t("footnotes"),
     }
   }, [t])
+
+  if (!plugin.open) return null
 
   var body = null
   if (plugin.path === null) {

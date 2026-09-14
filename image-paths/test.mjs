@@ -22,17 +22,49 @@ globalThis.window = {
   },
 }
 
+// A React stub that also enforces the rules of hooks: it counts the hooks each
+// component calls and refuses a render whose count differs from that
+// component's previous render — React error #310.
+const hookCounts = new Map()
+let counting = null
+let counted = 0
+
+function useHook() {
+  if (counting !== null) counted += 1
+}
+
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
   Fragment: 'Fragment',
-  useState: (initial) => [initial, () => {}],
-  useEffect: () => {},
+  useState: (initial) => {
+    useHook()
+    return [initial, () => {}]
+  },
+  useEffect: () => {
+    useHook()
+  },
 }
 
 /** Minimal React reconciliation: invoke function components until elements are host nodes. */
 function render(node) {
   if (node === null || typeof node !== 'object' || typeof node.type !== 'function') return node
-  return render(node.type(node.props))
+  const outerComponent = counting
+  const outerCount = counted
+  counting = node.type
+  counted = 0
+  let rendered
+  try {
+    rendered = node.type(node.props)
+  } finally {
+    const seen = hookCounts.get(counting)
+    if (seen !== undefined && seen !== counted) {
+      throw new Error(`rendered ${counted} hooks where the previous render called ${seen} (${counting.name})`)
+    }
+    hookCounts.set(counting, counted)
+    counting = outerComponent
+    counted = outerCount
+  }
+  return render(rendered)
 }
 
 await import('./client.js')

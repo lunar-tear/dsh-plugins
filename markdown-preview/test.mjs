@@ -16,24 +16,63 @@ import assert from 'node:assert/strict'
 let loaded
 globalThis.window = { __ModuleLoader__: { load(entry) { loaded = entry } } }
 
+// A React stub that also enforces the rules of hooks: it counts the hooks each
+// component calls and refuses a render whose count differs from that
+// component's previous render — exactly React error #310, which is the class of
+// bug this stub exists to catch (`useMemo` after an early return crashed the
+// real drawer in the browser).
+const hookCounts = new Map()
+let counting = null
+let counted = 0
+
+function useHook() {
+  if (counting !== null) counted += 1
+}
+
 const React = {
   createElement: (type, props, ...children) => ({ type, props: props ?? {}, children: children.flat() }),
   Fragment: 'Fragment',
-  useState: (initial) => [initial, () => {}],
+  useState: (initial) => {
+    useHook()
+    return [initial, () => {}]
+  },
   // Effects run once and are cleaned up immediately: enough to exercise what a
   // mount does, while leaving no interval behind.
   useEffect: (effect) => {
+    useHook()
     const cleanup = effect()
     if (typeof cleanup === 'function') cleanup()
   },
-  useMemo: (factory) => factory(),
-  useRef: (initial) => ({ current: initial }),
+  useMemo: (factory) => {
+    useHook()
+    return factory()
+  },
+  useRef: (initial) => {
+    useHook()
+    return { current: initial }
+  },
 }
 
 /** Minimal React reconciliation: invoke function components until elements are host nodes. */
 function render(node) {
   if (node === null || typeof node !== 'object' || typeof node.type !== 'function') return node
-  return render(node.type(node.props))
+  const outerComponent = counting
+  const outerCount = counted
+  counting = node.type
+  counted = 0
+  let rendered
+  try {
+    rendered = node.type(node.props)
+  } finally {
+    const seen = hookCounts.get(counting)
+    if (seen !== undefined && seen !== counted) {
+      throw new Error(`rendered ${counted} hooks where the previous render called ${seen} (${counting.name})`)
+    }
+    hookCounts.set(counting, counted)
+    counting = outerComponent
+    counted = outerCount
+  }
+  return render(rendered)
 }
 
 const MarkdownText = function MarkdownText() { return null }
@@ -64,7 +103,13 @@ globalThis.fetch = (url, options) => {
     ok: true,
     status: 200,
     headers: { get: () => '"1-2"' },
-    json: () => Promise.resolve({ files: [], truncated: false }),
+    json: () => Promise.resolve({
+      files: [
+        { path: 'docs/design/overview.md', size: 10, mtime: 2 },
+        { path: 'readme.md', size: 20, mtime: 1 },
+      ],
+      truncated: false,
+    }),
     text: () => Promise.resolve('# hello'),
   })
 }
@@ -229,13 +274,18 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   assert.equal(active.props['aria-pressed'], true)
 }
 
-// The drawer: closed renders nothing, open renders the panel with its copy.
+// The drawer: closing and opening must keep the same hook order. Rendering it
+// closed first and then open is the exact sequence that failed in the browser
+// with React #310 (a hook sat after the closed-state early return).
 {
   client.internals.reset()
-  assert.equal(render(overlayRegistration.component({})), null, 'nothing is mounted while closed')
+  client.internals.trackSession('s1', '/w')
+  const overlay = overlayRegistration.component({})
+  assert.equal(render(overlay), null, 'nothing is mounted while closed')
+  assert.equal(render(overlay), null, 'rendering closed twice is stable')
   client.internals.selectPath('docs/design/overview.md')
   client.internals.update({ open: true })
-  const drawer = render(overlayRegistration.component({}))
+  const drawer = render(overlay)
   assert.equal(drawer.type, 'aside')
   assert.equal(drawer.props.style.width, '460px')
   assert.equal(drawer.props['aria-label'], 't:title')
@@ -244,7 +294,35 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   const header = drawer.children.filter(Boolean)[1]
   const pathLabel = header.children.filter(Boolean).find((child) => child.props && child.props.className === 'dsv-mp-path')
   assert.equal(pathLabel.children[0], 'docs/design/overview.md', 'the path is shown in the header')
+
+  // Opening loaded the workspace listing, and the picker renders its rows.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const state = client.internals.state()
+  assert.equal(state.filesStatus, 'ready', 'the drawer loads the workspace listing when it opens')
+  assert.deepEqual(state.filePaths, ['docs/design/overview.md', 'readme.md'])
+  assert.ok(fetchCalls.some((call) => String(call.url).startsWith('/plugin/markdown-preview/find')), 'the listing came from the host route')
+
+  // Re-render with the listing in place, then close again.
+  const opened = render(overlayRegistration.component({}))
+  assert.equal(opened.type, 'aside')
   client.internals.update({ open: false })
+  assert.equal(render(overlayRegistration.component({})), null, 'closing renders nothing again')
+}
+
+// Following prefers a mention the workspace listing actually knows.
+{
+  const s = client.internals
+  s.reset()
+  s.trackSession('s1', '/w')
+  s.update({ filePaths: ['docs/b.md'] })
+  s.mention('docs/a.md')
+  s.mention('docs/b.md')
+  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'the listed mention wins over an unknown one')
+  s.update({ rejected: ['docs/b.md'] })
+  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'with every listed candidate rejected it still tries the rest')
+  s.update({ filePaths: [] })
+  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'an empty listing falls back to mention order')
 }
 
 // ── host half ───────────────────────────────────────────────────────────────

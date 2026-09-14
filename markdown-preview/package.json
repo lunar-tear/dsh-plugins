@@ -1,6 +1,6 @@
 {
   "name": "dsh-markdown-preview",
-  "version": "0.2.1",
+  "version": "0.3.1",
   "private": true,
   "description": "A Markdown preview drawer beside the dsh chat: the shell's own renderer (TeX, code, tables, footnotes) plus a document's local images.",
   "type": "module",

@@ -51,6 +51,12 @@ var KIND = "markdown-preview-file-chips-under-the-message-block"
 var FILE_ROUTE = "/plugin/markdown-preview/file"
 var IMAGE_ROUTE = "/plugin/markdown-preview/image"
 var FIND_ROUTE = "/plugin/markdown-preview/find"
+/** One HTML artifact, for the sandboxed canvas frame. */
+var CANVAS_ROUTE = "/plugin/markdown-preview/canvas"
+/** The diagram engine, fetched once per page. */
+var MERMAID_ROUTE = "/plugin/markdown-preview/mermaid.js"
+/** Paths the panel opens as an HTML canvas rather than a document. */
+var CANVAS_PATH = /\.html?$/i
 /** Mentioned files remembered for the picker. */
 var MAX_MENTIONS = 12
 /** Chips offered under one message. */
@@ -121,7 +127,7 @@ function rememberWidth(width) {
   }
 }
 /** Markdown path token: an ASCII path start, then anything that cannot end a path. */
-var MD_TOKEN = /[A-Za-z0-9_.@~+-][^\s`"'()[\]{}<>|,;:，。；：、！？]*\.(?:md|markdown|mdown)\b/gi
+var MD_TOKEN = /[A-Za-z0-9_.@~+-][^\s`"'()[\]{}<>|,;:，。；：、！？]*\.(?:md|markdown|mdown|html?)\b/gi
 /** A URL scheme, so a remote link is never treated as a workspace path. */
 var HAS_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]*:/
 /** One absolute URL, removed before scanning. */
@@ -140,6 +146,12 @@ var ZH = {
   'follow': '跟随对话',
   'manual': '工作区相对路径，例如 docs/design.md',
   'autoOpen': '对话提到新文档时自动打开',
+  'diagram.loading': '正在渲染图…',
+  'diagram.svg': '导出 SVG',
+  'diagram.png': '导出 PNG',
+  'canvas.reload': '重新加载画布',
+  'canvas.download': '下载 HTML',
+  'canvas.open': '新标签打开',
   'mentioned': '对话里提到过（点一条在这里打开）',
   'noMentions': '这段对话里还没提到 .md 文件。可以在上面输入一个工作区相对路径。',
   'loading': '加载中…',
@@ -162,6 +174,12 @@ var EN = {
   'follow': 'Follow the conversation',
   'manual': 'Workspace-relative path, e.g. docs/design.md',
   'autoOpen': 'Open the panel when the conversation names a document',
+  'diagram.loading': 'Rendering the diagram…',
+  'diagram.svg': 'Export SVG',
+  'diagram.png': 'Export PNG',
+  'canvas.reload': 'Reload the canvas',
+  'canvas.download': 'Download the HTML',
+  'canvas.open': 'Open in a new tab',
   'mentioned': 'Mentioned in the conversation (click one to open it here)',
   'noMentions': 'This conversation has not named a Markdown file yet. Type a workspace-relative path above.',
   'loading': 'Loading…',
@@ -213,6 +231,16 @@ function ensureStyles() {
     '.dsv-mp-list>.dsv-mp-item{flex:0 0 auto;min-height:22px}',
     '.dsv-mp-group{font-size:11px;color:var(--dsw-alias-label-caption,#999);padding:6px 2px 2px}',
     '.dsv-mp-switch{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary,#555);padding:2px}',
+    '.dsv-diagram{margin:14px 0;display:flex;flex-direction:column;align-items:center;gap:6px}',
+    '.dsv-diagram-svg{max-width:100%;overflow:auto}',
+    '.dsv-diagram-svg svg{max-width:100%;height:auto}',
+    '.dsv-diagram-bar{display:flex;gap:6px;opacity:.75}',
+    '.dsv-mermaid-note,.dsv-mermaid-source{font-size:12px;color:var(--dsw-alias-label-tertiary,#888);white-space:pre-wrap}',
+    '.dsv-mp-canvas{display:flex;flex-direction:column;height:100%;min-height:0}',
+    '.dsv-mp-canvas-bar{display:flex;align-items:center;gap:6px;padding:6px 0 8px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}',
+    '.dsv-mp-canvas-path{flex:1;min-width:0;font-size:11px;color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+    /* The artifact fills what is left of the panel, at its own aspect. */
+    '.dsv-mp-canvas-frame{flex:1;min-height:0;width:100%;border:0;background:#fff}',
     '.dsv-mp-item{display:block;width:100%;text-align:left;padding:4px 6px;border:0;background:transparent;border-radius:6px;font:inherit;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#444);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.dsv-mp-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,#111)}',
     '.dsv-mp-note{padding:16px 4px;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#888)}',
@@ -535,7 +563,7 @@ function adoptDeepLink() {
     return false
   }
   if (path === "" || path.length > 1024) return false
-  if (!/\.(?:md|markdown|mdown)$/i.test(path)) return false
+  if (!/\.(?:md|markdown|mdown|html?)$/i.test(path)) return false
   selectPath(path)
   update({ open: true })
   return true
@@ -573,7 +601,7 @@ function previewMention(value) {
   if (typeof value !== "string") return undefined
   var token = value.trim()
   if (token === "" || token.length > 1024) return undefined
-  if (!/\.(?:md|markdown|mdown)$/i.test(token)) return undefined
+  if (!/\.(?:md|markdown|mdown|html?)$/i.test(token)) return undefined
   var path = resolveListedPath(token)
   if (path === null) return undefined
   return {
@@ -976,6 +1004,226 @@ function FilePicker(props) {
   )
 }
 
+/** Whether one path is an HTML canvas rather than a Markdown document. */
+function isCanvasPath(path) {
+  return typeof path === "string" && CANVAS_PATH.test(path)
+}
+
+/**
+ * Split a document at its ```mermaid fences.
+ *
+ * The shell's renderer draws every fence as a code block and has no diagram
+ * engine, so the document is handed over in runs: Markdown runs go to that
+ * renderer unchanged, and each diagram becomes its own component. Recognising
+ * the fence in the source rather than querying the rendered DOM keeps the rule
+ * in one place and works while the document is still arriving.
+ * @param text - the document source.
+ * @returns `{ kind: 'markdown', text }` and `{ kind: 'diagram', code }` runs.
+ */
+function splitDiagramSegments(text) {
+  if (typeof text !== "string" || text.indexOf("```") === -1) {
+    return [{ kind: "markdown", text: typeof text === "string" ? text : "" }]
+  }
+  var segments = []
+  var cursor = 0
+  var pattern = /^[ \t]*(`{3,})[ \t]*mermaid[ \t]*\r?\n([\s\S]*?)^[ \t]*\1[ \t]*$/gm
+  var match
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > cursor) segments.push({ kind: "markdown", text: text.slice(cursor, match.index) })
+    segments.push({ kind: "diagram", code: match[2] })
+    cursor = match.index + match[0].length
+  }
+  if (cursor < text.length) segments.push({ kind: "markdown", text: text.slice(cursor) })
+  return segments.length === 0 ? [{ kind: "markdown", text: text }] : segments
+}
+
+/** One shared engine load per page; the fetch is megabytes, so it happens once. */
+var mermaidState = { promise: null }
+/** Render ids must be unique per page, not per document. */
+var diagramCounter = 0
+
+/** Whether the app is in a dark theme, so a diagram matches it. */
+function prefersDark() {
+  try {
+    return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches
+  } catch (error) {
+    return false
+  }
+}
+
+/**
+ * Load the diagram engine from the host and initialize it once.
+ * @returns a promise of the mermaid API.
+ */
+function loadMermaid() {
+  if (mermaidState.promise !== null) return mermaidState.promise
+  /**
+   * Configure the engine, whoever put it on the page. The strict level is what
+   * keeps a diagram's text from becoming markup, so it is applied here rather
+   * than assumed of a previously loaded copy.
+   */
+  function prepare(engine) {
+    try {
+      engine.initialize({ startOnLoad: false, securityLevel: "strict", theme: prefersDark() ? "dark" : "default" })
+    } catch (error) {
+      // Initialization is best effort: a render failure falls back to source.
+    }
+    return engine
+  }
+  mermaidState.promise = new Promise(function (resolve, reject) {
+    if (typeof window !== "undefined" && window.mermaid !== undefined) {
+      resolve(prepare(window.mermaid))
+      return
+    }
+    if (typeof document === "undefined") {
+      reject(new Error("no document"))
+      return
+    }
+    var script = document.createElement("script")
+    script.src = MERMAID_ROUTE
+    script.async = true
+    script.onload = function () {
+      if (window.mermaid === undefined) {
+        reject(new Error("mermaid did not register"))
+        return
+      }
+      resolve(prepare(window.mermaid))
+    }
+    script.onerror = function () { reject(new Error("mermaid is unavailable")) }
+    document.head.appendChild(script)
+  })
+  return mermaidState.promise
+}
+
+/** Save one blob under a name the reader chose. */
+function downloadBlob(name, blob) {
+  var url = URL.createObjectURL(blob)
+  var link = document.createElement("a")
+  link.href = url
+  link.download = name
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(function () { URL.revokeObjectURL(url) }, 10000)
+}
+
+/** Export one rendered diagram as a standalone SVG file. */
+function exportDiagramSvg(svg, name) {
+  downloadBlob(name + ".svg", new Blob([svg], { type: "image/svg+xml" }))
+}
+
+/** Export one rendered diagram as a PNG at twice the size, for slides. */
+function exportDiagramPng(svg, name) {
+  var source = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }))
+  var image = new Image()
+  image.onload = function () {
+    var canvas = document.createElement("canvas")
+    var scale = 2
+    canvas.width = Math.max(1, Math.round(image.width * scale))
+    canvas.height = Math.max(1, Math.round(image.height * scale))
+    var context = canvas.getContext("2d")
+    context.scale(scale, scale)
+    context.drawImage(image, 0, 0)
+    URL.revokeObjectURL(source)
+    canvas.toBlob(function (png) { if (png !== null) downloadBlob(name + ".png", png) }, "image/png")
+  }
+  image.onerror = function () { URL.revokeObjectURL(source) }
+  image.src = source
+}
+
+/** Rendered diagrams, keyed by their source. */
+var diagramCache = new Map()
+
+/** One mermaid fence, rendered and exportable; a failure keeps the source. */
+function MermaidDiagram(props) {
+  var t = props.t
+  var known = diagramCache.get(props.code)
+  var statePair = useState(known === undefined ? { status: "loading" } : known)
+  var state = statePair[0]
+  var setState = statePair[1]
+  useEffect(function () {
+    if (diagramCache.has(props.code)) return undefined
+    var cancelled = false
+    loadMermaid()
+      .then(function (mermaid) {
+        diagramCounter += 1
+        return mermaid.render("dsv-mermaid-" + diagramCounter, props.code)
+      })
+      .then(function (result) {
+        var ready = { status: "ready", svg: String(result.svg) }
+        diagramCache.set(props.code, ready)
+        if (!cancelled) setState(ready)
+      })
+      .catch(function () {
+        diagramCache.set(props.code, { status: "failed" })
+        if (!cancelled) setState({ status: "failed" })
+      })
+    return function () { cancelled = true }
+  }, [props.code])
+
+  var name = props.name === undefined ? "diagram" : props.name
+  if (state.status === "failed") return h("pre", { className: "dsv-mermaid-source" }, props.code)
+  if (state.status === "loading") return h("div", { className: "dsv-mermaid-note" }, t("diagram.loading"))
+  return h(
+    "figure",
+    { className: "dsv-diagram" },
+    h("div", { className: "dsv-diagram-svg", dangerouslySetInnerHTML: { __html: state.svg } }),
+    h(
+      "figcaption",
+      { className: "dsv-diagram-bar" },
+      h("button", {
+        type: "button",
+        className: "dsv-mp-btn",
+        title: t("diagram.svg"),
+        onClick: function () { exportDiagramSvg(state.svg, name) },
+      }, t("diagram.svg")),
+      h("button", {
+        type: "button",
+        className: "dsv-mp-btn",
+        title: t("diagram.png"),
+        onClick: function () { exportDiagramPng(state.svg, name) },
+      }, t("diagram.png")),
+    ),
+  )
+}
+
+/**
+ * One HTML artifact in a sandboxed frame: the canvas half of the panel.
+ *
+ * The frame runs the artifact's own scripts in an opaque origin — no cookies,
+ * no storage, no RPC — and the host sends the same policy with the bytes, so the
+ * isolation does not depend on this element keeping its attribute.
+ */
+function CanvasFrame(props) {
+  var plugin = usePluginState()
+  var t = props.t
+  var noncePair = useState(0)
+  var url = CANVAS_ROUTE + "?path=" + encodeURIComponent(plugin.path) + "&cwd=" + encodeURIComponent(plugin.cwd) + "&_=" + noncePair[0]
+  return h(
+    "div",
+    { className: "dsv-mp-canvas" },
+    h(
+      "div",
+      { className: "dsv-mp-canvas-bar" },
+      h("span", { className: "dsv-mp-canvas-path", title: plugin.path }, plugin.path),
+      h("button", {
+        type: "button",
+        className: "dsv-mp-btn",
+        title: t("canvas.reload"),
+        onClick: function () { noncePair[1](noncePair[0] + 1) },
+      }, "↻"),
+      h("a", { className: "dsv-mp-btn", href: url, download: "", title: t("canvas.download") }, "⤓"),
+      h("a", { className: "dsv-mp-btn", href: url, target: "_blank", rel: "noopener", title: t("canvas.open") }, "↗"),
+    ),
+    h("iframe", {
+      className: "dsv-mp-canvas-frame",
+      src: url,
+      title: plugin.path,
+      sandbox: "allow-scripts allow-forms allow-modals allow-popups",
+    }),
+  )
+}
+
 /**
  * The preview drawer itself: header, optional picker, and the rendered body.
  * @param props - this plugin's translate seat.
@@ -1040,7 +1288,9 @@ function PreviewDrawer(props) {
   if (!plugin.open) return null
 
   var body = null
-  if (plugin.path === null) {
+  if (plugin.path !== null && isCanvasPath(plugin.path) && plugin.cwd !== null) {
+    body = h(CanvasFrame, { t: t })
+  } else if (plugin.path === null) {
     // No file yet: the listing that supplies the fallback may still be in
     // flight, so say so instead of telling the reader to go find a file. With
     // no workspace root there is nothing to wait for, so that case reads as the
@@ -1055,11 +1305,21 @@ function PreviewDrawer(props) {
   } else if (current.status === "failed") {
     body = h("div", { className: "dsv-mp-note" }, t("failed"))
   } else if (current.status === "ready") {
-    body = h(MarkdownText, {
-      text: rewriteLocalImages(current.text, plugin.path, plugin.cwd),
-      streaming: false,
-      labels: labels,
-    })
+    // The document is handed over in runs so a ```mermaid fence becomes a real
+    // diagram while everything else keeps the shell's own rendering.
+    var segments = splitDiagramSegments(current.text)
+    var documentName = basenameOf(plugin.path).replace(/\.[^.]+$/, "")
+    body = h("div", null, segments.map(function (segment, index) {
+      if (segment.kind === "diagram") {
+        return h(MermaidDiagram, { key: "d" + index, code: segment.code, name: documentName + "-" + (index + 1), t: t })
+      }
+      return h(MarkdownText, {
+        key: "m" + index,
+        text: rewriteLocalImages(segment.text, plugin.path, plugin.cwd),
+        streaming: false,
+        labels: labels,
+      })
+    }))
   }
 
   return h(
@@ -1124,7 +1384,7 @@ var mentionDefinition = {
   match: function (event) {
     var text = messageText(event)
     if (text === null || text.length === 0) return null
-    if (!/\.(?:md|markdown|mdown)\b/i.test(stripFencedCode(text))) return null
+    if (!/\.(?:md|markdown|mdown|html?)\b/i.test(stripFencedCode(text))) return null
     return { id: String(event.seq), role: "start" }
   },
   start: function (_context, match) {
@@ -1266,6 +1526,12 @@ exports.apply = function apply(ctx) {
 /** Test seam: the bundle has no build step, so a spec drives the pure parts directly. */
 exports.internals = {
   KIND: KIND,
+  splitDiagramSegments: splitDiagramSegments,
+  isCanvasPath: isCanvasPath,
+  CANVAS_ROUTE: CANVAS_ROUTE,
+  MermaidDiagram: MermaidDiagram,
+  CanvasFrame: CanvasFrame,
+  MERMAID_ROUTE: MERMAID_ROUTE,
   previewMention: previewMention,
   reportMentions: reportMentions,
   dismissedFor: dismissedFor,

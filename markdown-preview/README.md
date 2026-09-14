@@ -54,6 +54,14 @@ http://127.0.0.1:3080/?preview=docs%2Fplan.md
 
 被链接的文档是按"显式选择"打开的，所以对话自己的跟随不会把它顶掉——适合把一篇方案直接贴给同事，或者自己收藏起来。
 
+**`.html`/`.htm` 路径打开的是画布，而不是文档。** 以 `.html` 或 `.htm` 结尾的路径会在面板里作为**画布**打开：artifact
+在一个沙箱化的 `<iframe>` 中运行（`allow-scripts allow-forms allow-modals allow-popups`，响应本身还带有
+`Content-Security-Policy: sandbox …`），因此它的脚本跑在不透明源（opaque origin）里，读不到本应用的 cookie、存储或
+RPC。画布工具栏提供**重新加载 / 下载 HTML / 新标签打开**。
+
+文件 chips 行和 `?preview=` 深链接同样接受 `.html`/`.htm`；工作区文件列表现在也会在 `.md` 之外列出 `.html`，但它仍然
+只用于确认被点名的路径确实存在。
+
 ## 效果
 
 ![Markdown 预览面板](../docs/preview-panel.png)
@@ -74,6 +82,13 @@ http://127.0.0.1:3080/?preview=docs%2Fplan.md
 成纯文本。插件会把每个本地目标重写到 Host 的图片路由，解析时**相对于文档自身所在目录**
 （`docs/design/overview.md` + `../img/a.png` → `docs/img/a.png`）。它无法提供的内容——`~` 路径、逃出工作区的
 路径、位于工作区之外的绝对路径——都会按原样保留，这样读者看到的是原始文本或替代文字，而不是一张裂图。
+
+**Mermaid 图表是它自己拆出来渲染的。** 文档里的 `` ```mermaid `` 围栏会在渲染前从 Markdown 源码里拆出来，交给
+mermaid 引擎画成真正的图——识别发生在文档源码上，而不是渲染完再去查询 DOM。引擎用的是宿主本来就带着的那份浏览器
+构建（harness 的一个文档依赖）：插件先在自身旁边找（`vendor/mermaid.min.js`，宿主有的话由 `install.sh` 复制进来），
+再去 harness profile 的模块树里找，最后从正在运行的服务器入口点向上遍历查找。没装引擎时，图表就退化成它本来的那个
+代码块。引擎以 `securityLevel: 'strict'` 初始化。每张渲染出来的图都提供**导出 SVG / 导出 PNG**——其中 PNG 按 2x
+导出，方便放进幻灯片。
 
 chips 节点的 kind 长度刻意取 50-59 个字符：Chat 视图在锚点序列相同的节点之间通过比较 key 来打破平局，key 的格式
 是 `<kind.length>:<kind><id>`，而所有内置 kind 的 key 都以小于 5 的数字开头——所以正是这个长度让 chips 排在点名了

@@ -23,6 +23,8 @@
 
 ![Markdown 预览面板](docs/preview-panel.png)
 
+面板还会把文档里的 **mermaid 图渲染成真正的图（可导出 SVG/PNG）**，并把 **HTML artifact 作为沙箱画布打开**。
+
 两张图都截自真实运行的 GUI：演示文档是工作区里的 `logs/dsh-preview-demo.md`，图片是仓库里已有的 `images/ecmaster-zero.png`。
 
 ## 安装

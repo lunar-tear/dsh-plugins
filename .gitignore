@@ -1,2 +1,4 @@
 .tmp-test/
 *.bak-*
+# The diagram engine is copied in by install.sh, not committed (3.5MB).
+vendor/

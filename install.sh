@@ -165,6 +165,32 @@ for index in "${!DIRS[@]}"; do
   fi
 done
 
+# The diagram engine is a documentation dependency of the harness, not something
+# this repository ships: copy whatever the host has next to the installed plugin
+# so the preview can render mermaid without reaching the network. A host without
+# one is fine — diagrams then render as the code blocks they are.
+vendor_mermaid() {
+  local target="$PLUGIN_HOME/dsh-markdown-preview/vendor"
+  local candidate
+  local dsh_bin
+  dsh_bin="$(command -v dsh 2>/dev/null || true)"
+  for candidate in \
+    "$DSH_HOME/profiles/node_modules/mermaid/dist/mermaid.min.js" \
+    "$HOME"/Workspace/*/node_modules/.pnpm/mermaid@*/node_modules/mermaid/dist/mermaid.min.js \
+    "$HOME"/*/node_modules/.pnpm/mermaid@*/node_modules/mermaid/dist/mermaid.min.js \
+    ${dsh_bin:+"$(dirname "$(readlink -f "$dsh_bin")")"/../node_modules/.pnpm/mermaid@*/node_modules/mermaid/dist/mermaid.min.js}; do
+    if [ -f "$candidate" ]; then
+      mkdir -p "$target"
+      cp "$candidate" "$target/mermaid.min.js"
+      echo "vendored the diagram engine from $candidate"
+      return 0
+    fi
+  done
+  echo "no mermaid build found on this host: the preview renders diagrams as code blocks"
+  return 0
+}
+
 install_rows
+vendor_mermaid
 echo "registered the rows in $PATCH_FILE"
 echo "(the running dsh web applies them live; reload the GUI page to load the browser halves)"

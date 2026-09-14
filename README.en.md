@@ -33,6 +33,9 @@ images:
 
 ![The Markdown preview panel](docs/preview-panel.png)
 
+The panel also renders a document's **mermaid diagrams as real diagrams
+(exportable as SVG/PNG)** and opens an **HTML artifact as a sandboxed canvas**.
+
 Both are captures of the real GUI: the document is `logs/dsh-preview-demo.md` in
 the workspace, the image is the repository's own `images/ecmaster-zero.png`.
 

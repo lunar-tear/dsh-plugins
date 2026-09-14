@@ -113,6 +113,11 @@ headers and are trusted as loopback callers, the same trust the rest of the
 local GUI assumes. A deployment that binds the GUI to a non-loopback interface
 must widen `loopbackHost` in `index.js`.
 
+The route also serves **SVG** (`image/svg+xml`), which is how architecture
+diagrams usually leave their tool. An `<img>` never runs a script inside one, so
+the element itself is what keeps SVG safe; the route checks the document really
+starts with `<svg`/`<?xml`, and caps it at 8 MiB.
+
 ## Enable / disable
 
 Two ways in. `../install.sh --link` does the first one for you.

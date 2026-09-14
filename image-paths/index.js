@@ -41,6 +41,8 @@ export const RESOLVE_ROUTE = '/plugin/image-paths/resolve'
 
 /** Refuse anything larger than this: the browser only ever shows a preview. */
 const MAX_BYTES = 32 * 1024 * 1024
+/** Vector images are markup; this bound keeps one from becoming a payload. */
+const MAX_SVG_BYTES = 8 * 1024 * 1024
 
 /** Refuse pathologically long inputs before touching the filesystem. */
 const MAX_PATH_CHARS = 4096
@@ -68,6 +70,10 @@ export const DECLARED_MEDIA_TYPES = new Map([
   ['.jpeg', 'image/jpeg'],
   ['.webp', 'image/webp'],
   ['.gif', 'image/gif'],
+  // Vector images are how architecture diagrams usually leave their tool, and
+  // an <img> never runs a script inside one — the element, not the route, is
+  // what keeps SVG safe here.
+  ['.svg', 'image/svg+xml'],
 ])
 
 /**
@@ -156,15 +162,34 @@ export async function resolveImageTarget(requested, cwd) {
   if (stat.size === 0) return { status: 404, reason: 'empty file' }
   if (stat.size > MAX_BYTES) return { status: 413, reason: 'image is too large to display' }
 
-  const handle = await fs.open(realPath, 'r')
   let head
-  try {
-    const buffer = Buffer.alloc(12)
-    const { bytesRead } = await handle.read(buffer, 0, 12, 0)
-    head = buffer.subarray(0, bytesRead)
-  } finally {
-    await handle.close()
+  if (declared !== 'image/svg+xml') {
+    const handle = await fs.open(realPath, 'r')
+    try {
+      const buffer = Buffer.alloc(12)
+      const { bytesRead } = await handle.read(buffer, 0, 12, 0)
+      head = buffer.subarray(0, bytesRead)
+    } finally {
+      await handle.close()
+    }
   }
+  // SVG has no magic bytes to sniff: its bytes are text, so the check is that
+  // the document really is one.
+  if (declared === 'image/svg+xml') {
+    if (stat.size > MAX_SVG_BYTES) return { status: 413, reason: 'svg is too large to display' }
+    const handle = await fs.open(realPath, 'r')
+    let start
+    try {
+      const buffer = Buffer.alloc(1024)
+      const { bytesRead } = await handle.read(buffer, 0, 1024, 0)
+      start = buffer.subarray(0, bytesRead).toString('utf8')
+    } finally {
+      await handle.close()
+    }
+    if (!/<svg[\s>]|<\?xml/i.test(start)) return { status: 415, reason: 'content is not an svg document' }
+    return { status: 200, realPath, mediaType: declared, size: stat.size }
+  }
+
   const sniffed = sniffMediaType(head)
   if (sniffed === undefined) return { status: 415, reason: 'content is not a supported image' }
   if (sniffed !== declared) return { status: 415, reason: 'content does not match the file extension' }
@@ -200,12 +225,34 @@ export function loopbackHost(req) {
  */
 export function sameOrigin(req) {
   if (!loopbackHost(req)) return false
+  if (pluginPageReferer(req)) return true
   const site = req.headers['sec-fetch-site']
   if (typeof site === 'string') return site === 'same-origin' || site === 'none'
   const origin = req.headers.origin
   if (typeof origin !== 'string' || origin === '') return true
   try {
     return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether one request came from a page a plugin of this collection served.
+ *
+ * A sandboxed canvas runs in an opaque origin, so its own requests carry no
+ * usable origin — but they do carry the URL of the page they started from. That
+ * is how an HTML artifact can still show a workspace image.
+ * @param req - the incoming request.
+ * @returns true when the referring page is served by the plugins themselves.
+ */
+export function pluginPageReferer(req) {
+  const referer = req.headers.referer
+  if (typeof referer !== 'string' || referer === '') return false
+  try {
+    const url = new URL(referer)
+    if (url.host !== req.headers.host) return false
+    return url.pathname.startsWith('/plugin/')
   } catch {
     return false
   }

@@ -582,6 +582,85 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   client.internals.update({ open: false })
 }
 
+// Diagrams: a mermaid fence is split out of the document, rendered, and offered
+// for export; a canvas is recognised as an artifact rather than a document.
+{
+  const { splitDiagramSegments, isCanvasPath } = client.internals
+  const doc = [
+    '# 架构',
+    '',
+    '```mermaid',
+    'graph TD',
+    '  A[网页] --> B[host 路由]',
+    '```',
+    '',
+    '结尾。',
+  ].join('\n')
+  const segments = splitDiagramSegments(doc)
+  assert.deepEqual(segments.map((segment) => segment.kind), ['markdown', 'diagram', 'markdown'])
+  assert.match(segments[1].code, /graph TD/)
+  assert.ok(segments[0].text.includes('# 架构'))
+  assert.ok(segments[2].text.includes('结尾'))
+  assert.deepEqual(splitDiagramSegments('没有图的文档').map((s) => s.kind), ['markdown'])
+  assert.deepEqual(splitDiagramSegments('```js\ncode\n```').map((s) => s.kind), ['markdown'], 'other fences stay with the renderer')
+
+  assert.equal(isCanvasPath('reports/canvas.html'), true)
+  assert.equal(isCanvasPath('reports/canvas.htm'), true)
+  assert.equal(isCanvasPath('docs/plan.md'), false)
+  assert.equal(client.internals.CANVAS_ROUTE, '/plugin/markdown-preview/canvas')
+  assert.equal(client.internals.MERMAID_ROUTE, '/plugin/markdown-preview/mermaid.js')
+
+  // Mentions and chips accept a canvas too.
+  const paths = client.internals.collectMarkdownPaths('画布见 reports/canvas.html，文档见 docs/plan.md')
+  assert.deepEqual(paths, ['reports/canvas.html', 'docs/plan.md'])
+}
+
+// The rendered diagram offers both exports, and a failure keeps the source.
+{
+  const registration = chatNodeRegistrations.get(client.internals.KIND)
+  assert.ok(registration !== undefined)
+  // The diagram component is private; drive it through the document body instead
+  // by opening a document that contains a fence.
+  const s = client.internals
+  s.reset()
+  s.trackSession('s1', '/w')
+  s.update({ filesStatus: 'ready', files: [{ path: 'docs/arch.md' }], filePaths: ['docs/arch.md'] })
+  s.selectPath('docs/arch.md')
+  s.update({ open: true })
+  const engineCalls = []
+  globalThis.window.mermaid = {
+    initialize: (options) => engineCalls.push(['initialize', options.securityLevel]),
+    render: (id, code) => Promise.resolve({ svg: `<svg data-code="${code.trim()}"></svg>` }),
+  }
+  globalThis.URL.createObjectURL = () => 'blob:test'
+  globalThis.URL.revokeObjectURL = () => {}
+
+  const { MermaidDiagram } = client.internals
+  const code = 'graph TD\n  A --> B'
+  const loading = render(MermaidDiagram({ code, name: 'arch', t: (key) => key }))
+  assert.equal(loading.props.className, 'dsv-mermaid-note', 'the diagram says it is rendering')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(engineCalls.some((call) => call[1] === 'strict'), 'the engine is initialized with strict security')
+
+  const ready = render(MermaidDiagram({ code, name: 'arch', t: (key) => key }))
+  assert.equal(ready.type, 'figure')
+  const svgHost = ready.children[0]
+  assert.equal(svgHost.props.className, 'dsv-diagram-svg')
+  assert.match(svgHost.props.dangerouslySetInnerHTML.__html, /graph TD/, 'the rendered svg is inserted')
+  const bar = ready.children[1]
+  assert.deepEqual(bar.children.map((child) => child.children[0]), ['diagram.svg', 'diagram.png'], 'both exports are offered')
+
+  // A failure keeps the source visible instead of an empty box.
+  globalThis.window.mermaid.render = () => Promise.reject(new Error('boom'))
+  const broken = render(MermaidDiagram({ code: 'graph TD\n  broken --> here', name: 'x', t: (key) => key }))
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const failed = render(MermaidDiagram({ code: 'graph TD\n  broken --> here', name: 'x', t: (key) => key }))
+  assert.equal(failed.type, 'pre', 'an unrenderable diagram falls back to its source')
+
+  s.update({ open: false })
+  delete globalThis.window.mermaid
+}
+
 // An explicit choice is remembered per workspace, and reopening prefers it.
 {
   const s = client.internals
@@ -643,8 +722,9 @@ const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a
     assert.equal((await host.resolveInside('linked.md', root)).status, 403, 'a symlink out of the workspace is refused')
     assert.equal((await host.resolveInside('docs/design/overview.md', 'relative/root')).status, 400)
 
+    await writeFile(join(root, 'canvas.html'), '<!doctype html>')
     const listing = await host.listMarkdownFiles(root)
-    assert.deepEqual(listing.files.map((entry) => entry.path).sort(), ['README.md', 'docs/design/overview.md'])
+    assert.deepEqual(listing.files.map((entry) => entry.path).sort(), ['README.md', 'canvas.html', 'docs/design/overview.md'], 'canvases are offered beside documents')
     assert.equal(listing.truncated, false)
     assert.ok(!listing.files.some((entry) => entry.path.includes('node_modules')), 'dependency directories are skipped')
 
@@ -692,11 +772,49 @@ const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a
     await host.serveImage(request(`${host.IMAGE_ROUTE}?path=notes.txt&cwd=${encodeURIComponent(root)}`), badImage)
     assert.equal(badImage.captured.status, 415)
 
-    const findResponse = stubResponse()
+    // The canvas route serves an artifact for a sandboxed frame, and refuses
+  // anything that is not one.
+  await writeFile(join(root, 'canvas.html'), '<!doctype html><title>demo</title><script>1</script>')
+  const canvasOk = stubResponse()
+  await host.serveCanvas(request(`${host.CANVAS_ROUTE}?path=canvas.html&cwd=${encodeURIComponent(root)}`), canvasOk)
+  assert.equal(canvasOk.captured.status, 200)
+  assert.match(canvasOk.captured.headers['content-type'], /text\/html/)
+  assert.match(canvasOk.captured.headers['content-security-policy'], /sandbox/, 'the artifact runs without this origin\'s authority')
+  assert.ok(String(canvasOk.captured.body).includes('<title>demo</title>'))
+
+  const canvasWrongType = stubResponse()
+  await host.serveCanvas(request(`${host.CANVAS_ROUTE}?path=README.md&cwd=${encodeURIComponent(root)}`), canvasWrongType)
+  assert.equal(canvasWrongType.captured.status, 415)
+
+  const canvasOutside = stubResponse()
+  await host.serveCanvas(request(`${host.CANVAS_ROUTE}?path=../outside.md&cwd=${encodeURIComponent(root)}`), canvasOutside)
+  assert.equal(canvasOutside.captured.status, 403)
+
+  const canvasCrossSite = stubResponse()
+  await host.serveCanvas(request(`${host.CANVAS_ROUTE}?path=canvas.html&cwd=${encodeURIComponent(root)}`, { 'sec-fetch-site': 'cross-site' }), canvasCrossSite)
+  assert.equal(canvasCrossSite.captured.status, 403)
+
+  // The diagram engine is resolved from this plugin first, then the host.
+  // A sandboxed canvas has an opaque origin, so its own requests are trusted by
+  // the page they came from instead. Without this an artifact could not load a
+  // diagram engine or one of the workspace's images.
+  assert.equal(host.pluginPageReferer(request('/plugin/markdown-preview/canvas?x=1', { referer: 'http://127.0.0.1:3080/plugin/markdown-preview/canvas?path=a.html' })), true)
+  assert.equal(host.pluginPageReferer(request('/x', { referer: 'http://127.0.0.1:3080/' })), false, 'an app page is not a plugin page')
+  assert.equal(host.pluginPageReferer(request('/x', { referer: 'http://evil.test/plugin/markdown-preview/canvas' })), false, 'another host is refused')
+  assert.equal(host.pluginPageReferer(request('/x', {})), false, 'no referrer, no trust')
+
+  const enginePath = host.mermaidBundlePath()
+  assert.ok(enginePath === undefined || enginePath.endsWith('mermaid.min.js'), 'the engine resolves to a bundle or nothing')
+
+  const mermaidResponse = stubResponse()
+  host.serveMermaid(request(host.MERMAID_ROUTE), mermaidResponse)
+  assert.ok([200, 404].includes(mermaidResponse.captured.status), 'the engine route answers with bytes or a clear miss')
+
+  const findResponse = stubResponse()
     await host.serveFind(request(`${host.FIND_ROUTE}?cwd=${encodeURIComponent(root)}`), findResponse)
     assert.equal(findResponse.captured.status, 200)
     const parsed = JSON.parse(String(findResponse.captured.body))
-    assert.deepEqual(parsed.files.map((entry) => entry.path).sort(), ['README.md', 'docs/design/overview.md'])
+    assert.deepEqual(parsed.files.map((entry) => entry.path).sort(), ['README.md', 'canvas.html', 'docs/design/overview.md'], 'the find route lists canvases too')
   } finally {
     await rm(parent, { recursive: true, force: true })
   }

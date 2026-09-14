@@ -75,6 +75,18 @@ The linked document is an explicit choice, so the conversation's own following
 never overrides it — handy for pasting a plan to a colleague, or bookmarking one
 for yourself.
 
+**A `.html`/`.htm` path opens a canvas, not a document.** A path ending in `.html`
+or `.htm` opens as a **canvas** in the panel: the artifact runs in a sandboxed
+`<iframe>` (`allow-scripts allow-forms allow-modals allow-popups`, and the
+response itself carries `Content-Security-Policy: sandbox …`), so its scripts run
+in an opaque origin with no access to this app's cookies, storage or RPC. The
+canvas bar offers **重新加载 / 下载 HTML / 新标签打开** (Reload / Download the
+HTML / Open in a new tab).
+
+The chips row and the `?preview=` deep link accept `.html`/`.htm` too, and the
+workspace listing now offers `.html` beside `.md` — it is still only used to
+confirm that a mentioned path exists.
+
 ## What it looks like
 
 ![The Markdown preview panel](../docs/preview-panel.png)
@@ -102,6 +114,18 @@ The plugin rewrites each local destination to the host's image route, resolved
 path escaping the workspace, an absolute path outside it — are left exactly as
 authored, so the reader sees the original text or the alt label rather than a
 broken image.
+
+**Mermaid diagrams are split out and rendered by the plugin itself.** A
+`` ```mermaid `` fence in a document is split out of the Markdown source before
+rendering — recognition happens on the document source, not by querying the DOM
+after the fact — and handed to the mermaid engine. That engine is the browser
+build the host already has (a documentation dependency of the harness): the
+plugin looks for it beside itself first (`vendor/mermaid.min.js`, which
+`install.sh` copies in when the host has one), then in the harness profile's
+module tree, then by walking up from the running server's entry point. With no
+engine installed, a diagram degrades to the code block it is. It is initialized
+with `securityLevel: 'strict'`, and each rendered diagram offers
+**导出 SVG / 导出 PNG** (Export SVG / Export PNG) — the PNG at 2x for slides.
 
 The chips node's kind is 50-59 characters long on purpose: the Chat view breaks
 ties between nodes sharing an anchor sequence by comparing keys, a key is

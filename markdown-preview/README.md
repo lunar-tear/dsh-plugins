@@ -21,6 +21,15 @@ added to the DSH checkout.
   so a chip always opens something; a path the model quoted from another
   checkout stays out of the row instead of becoming a dead click.
 
+The panel is **conversation-scoped**: it lists only what the conversation you are
+looking at named, and switching conversations switches the panel with it. The
+file list is recorded per session by the chips renderer — the only surface that
+is handed both the messages' paths and the session they belong to — so a new
+session's own list is the right list the moment it renders. The workspace listing
+is still fetched, but only to confirm those paths exist; it is never offered as a
+place to browse. With nothing named, the panel says so rather than opening some
+document the conversation never mentioned.
+
 The panel is a sidebar — **45% of the viewport**, wide enough for prose with
 tables and figures while the conversation stays readable, and it remembers the
 width you drag (up to the viewport minus a 240px strip). Inside it, the

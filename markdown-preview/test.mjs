@@ -202,26 +202,32 @@ const { collectMarkdownPaths, resolveFromDocument, rewriteLocalImages, messageTe
   assert.equal(messageText({ type: 'assistant/attempt', seq: 1, surfaceOp: 'append', data: {} }), null)
 }
 
-// Plugin state: mentions, follow targeting, session tracking.
+// Plugin state: per-session mentions, follow targeting, session tracking.
 {
   const s = client.internals
   s.reset()
   s.trackSession('s1', '/w')
-  s.mention('docs/a.md')
-  s.mention('docs/b.md')
-  s.mention('docs/a.md')
-  assert.deepEqual(s.state().mentioned, ['docs/a.md', 'docs/b.md'], 'newest first, deduplicated')
+  s.reportMentions('s1', ['docs/a.md', 'docs/b.md'])
+  s.reportMentions('s1', ['docs/b.md'])
+  assert.deepEqual(s.state().mentionsBySession.s1, ['docs/b.md', 'docs/a.md'], 'newest first, per session')
+  assert.deepEqual(s.mentionsOf(s.state()), ['docs/b.md', 'docs/a.md'], 'read through the current session')
   assert.equal(s.followTarget(s.state()), null, 'without a listing the drawer waits for it')
   s.update({ filesStatus: 'ready', files: [{ path: 'docs/a.md' }, { path: 'docs/b.md' }], filePaths: ['docs/a.md', 'docs/b.md'] })
-  assert.equal(s.followTarget(s.state()), 'docs/a.md')
-  s.update({ rejected: ['docs/a.md'] })
-  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'a rejected file is skipped')
+  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'the newest mentioned file that exists here')
+  s.update({ rejected: ['docs/b.md'] })
+  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'a failed file is skipped for the next mention')
   s.selectPath('docs/c.md')
   assert.equal(s.state().manual, true, 'an explicit choice stops the automatic follow')
   assert.equal(s.state().path, 'docs/c.md')
+
+  // Switching conversations switches the panel: the new session has its own list.
   s.trackSession('s2', '/w2')
-  assert.deepEqual(s.state().rejected, [], 'a session switch clears the rejections')
-  assert.equal(s.state().cwd, '/w2')
+  assert.deepEqual(s.mentionsOf(s.state()), [], 'a session that named nothing shows nothing')
+  assert.equal(s.followTarget(s.state()), null)
+  s.reportMentions('s2', ['docs/plan.md'])
+  s.update({ filesStatus: 'ready', files: [{ path: 'docs/plan.md' }], filePaths: ['docs/plan.md'] })
+  assert.equal(s.followTarget(s.state()), 'docs/plan.md', 'and follows the new conversation')
+  assert.deepEqual(s.state().mentionsBySession.s1, ['docs/b.md', 'docs/a.md'], 'the other session keeps its own list')
 }
 
 // apply(): registrations, the toggle button, and the drawer.
@@ -290,8 +296,8 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
     data: { message: { content: [{ type: 'text', text: '先看 docs/a.md 再看 docs/b.md' }] } },
   }
   assert.deepEqual(definition.match(event), { id: '11', role: 'start' })
-  definition.start({}, { event })
-  assert.deepEqual(client.internals.state().mentioned, ['docs/a.md', 'docs/b.md'])
+  const state = definition.start({}, { event })
+  assert.deepEqual(state.paths, ['docs/a.md', 'docs/b.md'], 'the Definition publishes the paths it found')
   assert.equal(definition.match({ ...event, data: { message: { content: [{ type: 'text', text: 'no file here' }] } } }), null)
 }
 
@@ -348,47 +354,38 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   assert.equal(render(overlayRegistration.component({})), null, 'closing renders nothing again')
 }
 
-// Selection order: the drawer must always land on a document, without chasing
-// paths that the workspace listing says are not here.
+// Selection order: this conversation's Markdown, then the reader's own choice,
+// and never a document the conversation did not name.
 {
   const s = client.internals
   const ready = (paths) => s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
-  storage.clear()   // this block is about mentions and the listing, not the remembered file
+  storage.clear()   // this block is about the conversation, not the remembered file
   s.reset()
   s.trackSession('s1', '/w')
-  assert.equal(s.followTarget(s.state()), null, 'nothing mentioned and no listing yet: nothing to show')
-  ready(['docs/b.md', 'docs/c.md'])
-  s.mention('docs/a.md')          // a path from another checkout, not in this workspace
-  s.mention('docs/b.md')
-  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'a listed mention wins over an unlisted one')
-  s.update({ rejected: ['docs/b.md'] })
-  assert.equal(s.followTarget(s.state()), 'docs/c.md', 'a failed row is skipped for the next listing row')
-  s.update({ rejected: ['docs/b.md', 'docs/c.md'] })
-  assert.equal(s.followTarget(s.state()), null, 'with every row failed there is honestly nothing to show')
+  assert.equal(s.followTarget(s.state()), null, 'no mentions and no listing yet: nothing to show')
 
-  // No mention at all: a document near the top of the tree is shown, never an
-  // empty note, and never a vendored README that a build just unpacked.
-  s.reset()
-  s.trackSession('s1', '/w')
-  ready(['third_party_libs/x-1.0/README.md', 'docs/design/overview.md', 'readme.md'])
-  assert.equal(s.followTarget(s.state()), 'docs/design/overview.md', 'a shallow document wins over the newest deep one')
-  ready(['third_party_libs/x-1.0/README.md'])
-  assert.equal(s.followTarget(s.state()), 'third_party_libs/x-1.0/README.md', 'with nothing shallow the newest is still shown')
+  s.reportMentions('s1', ['docs/b.md', 'docs/a.md'])
+  ready(['docs/a.md'])
+  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'a mention the workspace confirms, over an unlisted one')
+  s.update({ rejected: ['docs/a.md'] })
+  assert.equal(s.followTarget(s.state()), null, 'with nothing confirmed there is nothing to show — not some other document')
 
-  // The listing unavailable: the remembered file first, then any mention.
-  s.reset()
-  s.trackSession('s1', '/w')
-  s.update({ filesStatus: 'failed' })
-  assert.equal(s.followTarget(s.state()), null, 'no listing and nothing remembered: nothing to show')
-  s.mention('docs/a.md')
-  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'without a listing any mention is tried')
+  // A vendored README the conversation also named loses to the document it is
+  // actually working on.
+  ready(['third_party_libs/x-1.0/README.md', 'docs/a.md'])
+  s.update({ rejected: [] })
+  assert.equal(s.followTarget(s.state()), 'docs/a.md')
 
-  // A listing still in flight waits instead of guessing.
+  // The reader's explicit choice survives a session that names nothing.
+  s.selectPath('docs/notes.md')
   s.reset()
   s.trackSession('s1', '/w')
-  s.update({ filesStatus: 'loading' })
-  s.mention('docs/a.md')
-  assert.equal(s.followTarget(s.state()), null, 'while the listing loads the drawer says so rather than fetching a guess')
+  ready(['docs/notes.md'])
+  assert.equal(s.followTarget(s.state()), 'docs/notes.md', 'reopening returns to the remembered file')
+
+  // Huge documents are still scanned within a budget rather than in full.
+  assert.equal(client.internals.isDependencyPath('third_party_libs/x/README.md'), true)
+  assert.equal(client.internals.isDependencyPath('docs/design/overview.md'), false)
 }
 
 // The chips node: the placement contract, and the row itself.
@@ -421,6 +418,16 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   const renderChips = (node) => render(chipsRegistration.component({ node, t: (key, params) => `${key}` }))
 
   assert.equal(renderChips(node), null, 'no chips before the listing is ready')
+  // The list is per session, and it is recorded even while the chips cannot be
+  // drawn yet — that is what makes switching conversations switch the panel.
+  client.internals.reset()
+  render(chipsRegistration.component({ node, sessionId: 's9', t: (key) => key }))
+  assert.deepEqual(
+    client.internals.state().mentionsBySession.s9,
+    ['docs/implementation_plan.md', 'packages/client/AGENTS.md'],
+    'the renderer files the message\'s paths under its own session',
+  )
+  assert.deepEqual(client.internals.mentionsOf({ sessionId: 's9', mentionsBySession: { s9: ['x.md'] } }), ['x.md'])
   client.internals.trackSession('s1', '/w')
   client.internals.update({
     filesStatus: 'ready',
@@ -500,22 +507,17 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   assert.equal(s.state().manual, true, 'an explicit choice stops the automatic follow')
 
   // A reopened page: the remembered file comes back unless the conversation
-  // names a listing-known file, which is the follow feature.
+  // this session belongs to named one, which is the follow feature.
   s.reset()
   s.trackSession('s1', '/w')
   ready(['a.md', 'b.md'])
   assert.equal(s.followTarget(s.state()), 'b.md', 'reopening returns to the remembered file')
-  s.mention('a.md')
-  assert.equal(s.followTarget(s.state()), 'a.md', 'a listed mention still takes precedence')
+  s.reportMentions('s1', ['a.md'])
+  assert.equal(s.followTarget(s.state()), 'a.md', 'a mentioned file takes precedence over the remembered one')
   s.update({ rejected: ['a.md'] })
   assert.equal(s.followTarget(s.state()), 'b.md', 'and the remembered file is the fallback again')
-
-  // A remembered file that the listing cannot confirm (older than its cap, or
-  // gone) is still tried once, then skipped for good.
-  s.update({ mentioned: [], rejected: [], filePaths: ['a.md'], files: [{ path: 'a.md' }] })
-  assert.equal(s.followTarget(s.state()), 'b.md', 'an unconfirmed remembered file is tried')
-  s.update({ rejected: ['b.md'] })
-  assert.equal(s.followTarget(s.state()), 'a.md', 'once it fails the listing takes over')
+  s.update({ rejected: ['a.md', 'b.md'] })
+  assert.equal(s.followTarget(s.state()), null, 'with both failed the drawer says so instead of guessing')
 }
 
 // ── host half ───────────────────────────────────────────────────────────────

@@ -140,7 +140,7 @@ var ZH = {
   'follow': '跟随对话',
   'manual': '工作区相对路径，例如 docs/design.md',
   'mentioned': '对话里提到过（点一条在这里打开）',
-  'workspace': '工作区里的 Markdown（点一条在这里打开）',
+  'noMentions': '这段对话里还没提到 .md 文件。可以在上面输入一个工作区相对路径。',
   'loading': '加载中…',
   'empty': '还没有可预览的文件：先让对话里出现一个 .md 路径，或在上面的输入框里填一个。',
   'notFound': '找不到这个文件（或它不在会话工作区内）。',
@@ -161,7 +161,7 @@ var EN = {
   'follow': 'Follow the conversation',
   'manual': 'Workspace-relative path, e.g. docs/design.md',
   'mentioned': 'Mentioned in the conversation (click one to open it here)',
-  'workspace': 'Markdown in the workspace (click one to open it here)',
+  'noMentions': 'This conversation has not named a Markdown file yet. Type a workspace-relative path above.',
   'loading': 'Loading…',
   'empty': 'Nothing to preview yet: mention a .md path in the conversation, or type one above.',
   'notFound': 'No such file, or it is outside the session workspace.',
@@ -409,7 +409,8 @@ var INITIAL = {
   path: null,
   follow: true,
   manual: false,
-  mentioned: [],
+  /** Mentioned Markdown, per session: the panel follows the conversation. */
+  mentionsBySession: {},
   rejected: [],
   width: initialWidth(),
   /** Workspace Markdown listing: `{ path, size, mtime }` rows plus their paths. */
@@ -432,11 +433,43 @@ function update(patch) {
   listeners.forEach(function (listener) { listener() })
 }
 
-/** Remember one mentioned Markdown path, newest first. */
-function mention(path) {
-  if (state.mentioned.indexOf(path) === 0) return
-  var rest = state.mentioned.filter(function (entry) { return entry !== path })
-  update({ mentioned: [path].concat(rest).slice(0, MAX_MENTIONS) })
+/**
+ * Record the Markdown files one session's messages named, newest first.
+ *
+ * Reported by the chat-node renderer, which is handed the session it belongs to
+ * — the Definition that reads the messages has no session identity, so it cannot
+ * file them itself. Keying by session is what makes switching conversations
+ * switch the panel: the new session's own mentions are already the right list.
+ * @param sessionId - the session the messages belong to.
+ * @param paths - the paths those messages named, in mention order.
+ */
+function reportMentions(sessionId, paths) {
+  if (sessionId === null || sessionId === undefined || !Array.isArray(paths) || paths.length === 0) return
+  var key = String(sessionId)
+  var current = state.mentionsBySession[key] === undefined ? [] : state.mentionsBySession[key]
+  var next = current.slice()
+  var changed = false
+  for (var index = paths.length - 1; index >= 0; index -= 1) {
+    var path = paths[index]
+    if (next.indexOf(path) === 0) continue
+    var rest = []
+    for (var scan = 0; scan < next.length; scan += 1) {
+      if (next[scan] !== path) rest.push(next[scan])
+    }
+    next = [path].concat(rest).slice(0, MAX_MENTIONS)
+    changed = true
+  }
+  if (!changed) return
+  var map = Object.assign({}, state.mentionsBySession)
+  map[key] = next
+  update({ mentionsBySession: map })
+}
+
+/** The Markdown files the current session's conversation named, newest first. */
+function mentionsOf(current) {
+  if (current.sessionId === null || current.sessionId === undefined) return []
+  var paths = current.mentionsBySession[String(current.sessionId)]
+  return paths === undefined ? [] : paths
 }
 
 /** Forget a path that did not resolve, so following can move on. */
@@ -454,10 +487,7 @@ function trackSession(sessionId, cwd) {
 /** Select one file explicitly, which stops the automatic follow. */
 function selectPath(path) {
   update({ path: path, manual: true })
-  if (path !== null) {
-    mention(path)
-    rememberPath(state.cwd, path)
-  }
+  if (path !== null) rememberPath(state.cwd, path)
 }
 
 /**
@@ -593,41 +623,40 @@ function rememberPath(cwd, path) {
  */
 function followTarget(current) {
   var listed = current.filePaths === undefined ? [] : current.filePaths
+  var mentioned = mentionsOf(current)
   var cache = rememberedPath(current.cwd)
   function usable(path) {
     return path !== null && current.rejected.indexOf(path) === -1
   }
   function firstListedMention() {
-    for (var index = 0; index < current.mentioned.length; index += 1) {
-      var candidate = current.mentioned[index]
-      if (usable(candidate) && listed.indexOf(candidate) !== -1) return candidate
+    var fallback = null
+    for (var index = 0; index < mentioned.length; index += 1) {
+      var candidate = mentioned[index]
+      if (!usable(candidate) || listed.indexOf(candidate) === -1) continue
+      // A conversation may name both a vendored README and the document it is
+      // working on; the document is what the reader wants to see.
+      if (isDependencyPath(candidate)) {
+        if (fallback === null) fallback = candidate
+        continue
+      }
+      return candidate
     }
-    return null
+    return fallback
   }
   function firstMention() {
-    for (var index = 0; index < current.mentioned.length; index += 1) {
-      if (usable(current.mentioned[index])) return current.mentioned[index]
+    for (var index = 0; index < mentioned.length; index += 1) {
+      if (usable(mentioned[index])) return mentioned[index]
     }
     return null
   }
-  if (current.filesStatus === "ready" && listed.length > 0) {
+  if (current.filesStatus === "ready") {
     var chosen = firstListedMention()
     if (chosen !== null) return chosen
-    if (usable(cache)) return cache
-    // The listing is newest-first, so the first shallow row is the newest
-    // document near the top of the tree. A vendored README that a build just
-    // unpacked is usually the newest file overall and the worst thing to open.
-    for (var shallow = 0; shallow < listed.length; shallow += 1) {
-      if (!usable(listed[shallow])) continue
-      if (isDependencyPath(listed[shallow])) continue
-      if (segmentsOf(listed[shallow]) <= 3) return listed[shallow]
-    }
-    for (var index = 0; index < listed.length; index += 1) {
-      if (usable(listed[index])) return listed[index]
-    }
-    return null
+    // Nothing this conversation named is in the workspace: fall back to the file
+    // the reader last chose here, and otherwise show nothing rather than a
+    // document the conversation never mentioned.
+    return usable(cache) ? cache : null
   }
-  if (current.filesStatus === "ready") return usable(cache) ? cache : null
   if (current.filesStatus === "failed") {
     if (usable(cache)) return cache
     return firstMention()
@@ -809,9 +838,9 @@ function FilePicker(props) {
   var draftPair = useState("")
   var draft = draftPair[0]
   var setDraft = draftPair[1]
-  // The listing itself lives in the plugin state: the drawer's own open effect
-  // loads it, and the picker only reads it.
-  var files = plugin.files
+  // The panel lists what this conversation named. The workspace listing is still
+  // fetched, but only to confirm those paths exist.
+  var mentions = mentionsOf(plugin)
 
   function choose(path) {
     selectPath(path)
@@ -836,12 +865,12 @@ function FilePicker(props) {
         choose(value)
       },
     }),
-    plugin.mentioned.length > 0
+    mentions.length > 0
       ? h(
         "div",
         { className: "dsv-mp-list" },
         h("div", { className: "dsv-mp-group" }, t("mentioned")),
-        plugin.mentioned.map(function (path) {
+        mentions.map(function (path) {
           return h(
             "button",
             { key: "mentioned:" + path, type: "button", className: "dsv-mp-item", title: path, onClick: function () { choose(path) } },
@@ -850,24 +879,9 @@ function FilePicker(props) {
         }),
       )
       : null,
-    h("div", { className: "dsv-mp-group" }, t("workspace")),
-    plugin.filesStatus === "loading" ? h("div", { className: "dsv-mp-note" }, t("loading")) : null,
-    plugin.filesStatus === "failed" ? h("div", { className: "dsv-mp-note" }, t("failed")) : null,
-    plugin.filesStatus === "ready" && files.length === 0 ? h("div", { className: "dsv-mp-note" }, t("empty")) : null,
-    files.length > 0
-      ? h(
-        "div",
-        { className: "dsv-mp-list" },
-        files.map(function (entry) {
-          return h(
-            "button",
-            { key: "file:" + entry.path, type: "button", className: "dsv-mp-item", title: entry.path, onClick: function () { choose(entry.path) } },
-            entry.path,
-          )
-        }),
-      )
+    mentions.length === 0
+      ? h("div", { className: "dsv-mp-note" }, t("noMentions"))
       : null,
-    plugin.filesTruncated ? h("div", { className: "dsv-mp-note" }, t("truncated")) : null,
   )
 }
 
@@ -901,7 +915,7 @@ function PreviewDrawer(props) {
     if (!plugin.open || !plugin.follow || plugin.manual) return
     var target = followTarget(plugin)
     if (target !== plugin.path) update({ path: target })
-  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentioned, plugin.rejected, plugin.path, plugin.filePaths, plugin.filesStatus])
+  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentionsBySession, plugin.sessionId, plugin.rejected, plugin.path, plugin.filePaths, plugin.filesStatus])
 
   // The workspace listing is what tells a mention apart from a path that only
   // looks like one, so following loads it as soon as the drawer opens.
@@ -1024,11 +1038,9 @@ var mentionDefinition = {
   },
   start: function (_context, match) {
     var text = messageText(match.event)
-    var paths = text === null ? [] : collectMarkdownPaths(text)
-    // The one deliberate side effect in this plugin: the mention list is a
-    // projection of the conversation every preview surface reads.
-    for (var index = paths.length - 1; index >= 0; index -= 1) mention(paths[index])
-    return { paths: paths }
+    // Publication only: the renderer below files these under the session that
+    // owns the message, which a Definition cannot see.
+    return { paths: text === null ? [] : collectMarkdownPaths(text) }
   },
   update: function (context) { return context.state },
   buildViewNode: function (context) {
@@ -1063,6 +1075,13 @@ function MarkdownFileChips(props) {
   var t = props.t
   var node = props.node
   var paths = node !== undefined && node.data !== undefined && Array.isArray(node.data.paths) ? node.data.paths : []
+
+  // Reported before any rendering decision: the file list must know what this
+  // conversation named even while the workspace listing is still loading.
+  useEffect(function () {
+    reportMentions(props.sessionId, paths)
+  }, [props.sessionId, node])
+
   if (paths.length === 0) return null
   if (plugin.filesStatus !== "ready" || plugin.filePaths.length === 0) return null
   var openable = []
@@ -1156,6 +1175,8 @@ exports.apply = function apply(ctx) {
 exports.internals = {
   KIND: KIND,
   previewMention: previewMention,
+  reportMentions: reportMentions,
+  mentionsOf: mentionsOf,
   segmentsOf: segmentsOf,
   isDependencyPath: isDependencyPath,
   resolveListedPath: resolveListedPath,
@@ -1168,7 +1189,6 @@ exports.internals = {
   state: function () { return state },
   reset: function () { state = INITIAL; listeners.clear() },
   update: update,
-  mention: mention,
   followTarget: followTarget,
   selectPath: selectPath,
   trackSession: trackSession,

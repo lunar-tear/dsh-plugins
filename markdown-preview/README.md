@@ -21,11 +21,12 @@ added to the DSH checkout.
   so a chip always opens something; a path the model quoted from another
   checkout stays out of the row instead of becoming a dead click.
 
-The panel is built so the **document owns it**: it opens at **80% of the
-viewport** (the frame keeps a strip beside it, and the width you drag is
-remembered), and the file lists are an aside capped at **20% of the panel's
-height**, scrolling inside that — so opening them never squeezes the Markdown
-into a strip at the bottom. Opening the panel also **collapses the frame's own
+The panel is a sidebar — **45% of the viewport**, wide enough for prose with
+tables and figures while the conversation stays readable, and it remembers the
+width you drag (up to the viewport minus a 240px strip). Inside it, the
+**document owns the panel**: the file lists are an aside capped at **20% of the
+panel's height** and scroll inside that, so opening them never squeezes the
+Markdown into a strip at the bottom — the document keeps ~80% either way. Opening the panel also **collapses the frame's own
 right column** (the details panel): two panels fighting for the same edge leave
 neither readable.
 

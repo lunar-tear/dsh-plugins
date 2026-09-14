@@ -323,8 +323,8 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   const drawer = render(overlay)
   assert.equal(drawer.type, 'aside')
   assert.equal(drawer.props.style.width, `${client.internals.initialWidth()}px`, 'the opening width follows the viewport, not a fixed 460px')
-  // The document owns the screen: 80% of the viewport, with a strip of frame left.
-  assert.equal(client.internals.initialWidth(), 960, '80% of the 1200px test viewport')
+  // A sidebar that leaves the conversation readable; the drag may go wider.
+  assert.equal(client.internals.initialWidth(), 540, '45% of the 1200px test viewport')
   assert.ok(client.internals.maxWidth() <= 1200 - 240, 'the frame keeps a strip visible however wide the drawer is dragged')
   assert.equal(drawer.props['aria-label'], 't:title')
   const parts = drawer.children.filter(Boolean).map((child) => child.type)

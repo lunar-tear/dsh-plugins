@@ -68,11 +68,13 @@ var MAX_WIDTH = 1600
 /** Frame width kept visible beside the drawer, however wide it is dragged. */
 var MIN_VISIBLE_FRAME = 240
 /**
- * Share of the viewport the drawer takes. The document is what the reader
- * opened the panel for, so it owns the screen by default and the frame keeps a
- * strip beside it; drag the left edge (the width is remembered) to trade back.
+ * Share of the viewport the drawer takes. It is a sidebar: wide enough for prose
+ * with tables and figures, while the conversation it was opened from stays
+ * readable beside it. The 80% the reader asked for is the *document's* share of
+ * the panel (see the stylesheet below), not the panel's share of the screen —
+ * and a width dragged to something else is remembered.
  */
-var DEFAULT_WIDTH_RATIO = 0.8
+var DEFAULT_WIDTH_RATIO = 0.45
 /** Where the dragged width is remembered. */
 var WIDTH_KEY = "dsh-markdown-preview:width"
 

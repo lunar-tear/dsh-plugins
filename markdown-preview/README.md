@@ -21,10 +21,13 @@ added to the DSH checkout.
   so a chip always opens something; a path the model quoted from another
   checkout stays out of the row instead of becoming a dead click.
 
-Opening the panel also **collapses the frame's own right column** (the details
-panel), because two panels fighting for the same edge leave neither readable.
-The panel opens at 45% of the viewport — a fixed 460px is cramped for prose with
-tables and figures — and remembers the width you drag it to.
+The panel is built so the **document owns it**: it opens at **80% of the
+viewport** (the frame keeps a strip beside it, and the width you drag is
+remembered), and the file lists are an aside capped at **20% of the panel's
+height**, scrolling inside that — so opening them never squeezes the Markdown
+into a strip at the bottom. Opening the panel also **collapses the frame's own
+right column** (the details panel): two panels fighting for the same edge leave
+neither readable.
 
 1. Or click the preview toggle in the session header (the panel-with-document
    icon beside the session utilities) — the panel opens on the right.

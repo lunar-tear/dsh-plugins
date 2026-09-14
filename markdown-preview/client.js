@@ -61,11 +61,18 @@ var POLL_MS = 2500
 var STORAGE_PREFIX = "dsh-markdown-preview:"
 /** How long a workspace Markdown listing is reused before it is fetched again. */
 var LISTING_TTL_MS = 15000
-/** Drawer width bounds, in px. */
+/** Narrowest the drawer may be dragged, in px. */
 var MIN_WIDTH = 320
-var MAX_WIDTH = 900
-/** Share of the viewport the drawer takes when nothing has been dragged yet. */
-var DEFAULT_WIDTH_RATIO = 0.45
+/** Widest absolute drawer width, in px. */
+var MAX_WIDTH = 1600
+/** Frame width kept visible beside the drawer, however wide it is dragged. */
+var MIN_VISIBLE_FRAME = 240
+/**
+ * Share of the viewport the drawer takes. The document is what the reader
+ * opened the panel for, so it owns the screen by default and the frame keeps a
+ * strip beside it; drag the left edge (the width is remembered) to trade back.
+ */
+var DEFAULT_WIDTH_RATIO = 0.8
 /** Where the dragged width is remembered. */
 var WIDTH_KEY = "dsh-markdown-preview:width"
 
@@ -74,17 +81,32 @@ var WIDTH_KEY = "dsh-markdown-preview:width"
  * of the viewport — a fixed 460px is cramped for prose with tables and figures.
  * @returns the width in px, clamped to the drag range.
  */
+/** The current viewport width, with a sane fallback for tests and odd hosts. */
+function viewportWidth() {
+  return typeof window !== "undefined" && typeof window.innerWidth === "number" ? window.innerWidth : 1200
+}
+
+/**
+ * The widest the drawer may be right now: the frame keeps
+ * {@link MIN_VISIBLE_FRAME} px of itself visible.
+ * @returns the clamp ceiling in px.
+ */
+function maxWidth() {
+  return Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, viewportWidth() - MIN_VISIBLE_FRAME))
+}
+
 function initialWidth() {
   if (typeof localStorage !== "undefined") {
     try {
       var stored = Number(localStorage.getItem(WIDTH_KEY))
-      if (Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH) return stored
+      if (Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH) {
+        return Math.min(maxWidth(), Math.max(MIN_WIDTH, Math.round(stored)))
+      }
     } catch {
       // Private mode: fall through to the viewport share.
     }
   }
-  var viewport = typeof window !== "undefined" && typeof window.innerWidth === "number" ? window.innerWidth : 1200
-  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(viewport * DEFAULT_WIDTH_RATIO)))
+  return Math.min(maxWidth(), Math.max(MIN_WIDTH, Math.round(viewportWidth() * DEFAULT_WIDTH_RATIO)))
 }
 
 /** Remember the width the reader dragged the drawer to. */
@@ -175,10 +197,13 @@ function ensureStyles() {
     '.dsv-mp-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1))}',
     '.dsv-mp-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#111);white-space:nowrap}',
     '.dsv-mp-path{flex:1;min-width:0;font-size:11px;color:var(--dsw-alias-label-tertiary,#888);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
-    '.dsv-mp-body{flex:1;overflow:auto;padding:2px 16px 32px}',
-    '.dsv-mp-picker{border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));padding:8px 10px;display:flex;flex-direction:column;gap:6px}',
+    '.dsv-mp-body{flex:1;min-height:0;overflow:auto;padding:2px 16px 32px}',
+    /* The document owns the panel: the file lists are an aside that may take at
+       most a fifth of it and scroll within that, so opening them never squeezes
+       the Markdown into a strip at the bottom. */
+    '.dsv-mp-picker{flex:0 0 auto;max-height:20vh;overflow:auto;border-bottom:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.1));padding:8px 10px;display:flex;flex-direction:column;gap:6px}',
     '.dsv-mp-input{width:100%;height:28px;padding:0 8px;font:inherit;font-size:12px;color:var(--dsw-alias-label-primary,#111);background:var(--dsw-alias-bg-base,#fff);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.15));border-radius:6px;box-sizing:border-box}',
-    '.dsv-mp-list{max-height:32vh;overflow:auto;display:flex;flex-direction:column}',
+    '.dsv-mp-list{display:flex;flex-direction:column}',
     /* Without this the capped column squeezes every row into a sliver, which
        renders the whole list as a smear of clipped glyphs. */
     '.dsv-mp-list>.dsv-mp-item{flex:0 0 auto;min-height:22px}',
@@ -973,7 +998,7 @@ function DragHandle() {
     onPointerMove: function (event) {
       if (dragging.current === null) return
       var next = dragging.current.startWidth - (event.clientX - dragging.current.startX)
-      update({ width: Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(next))) })
+      update({ width: Math.min(maxWidth(), Math.max(MIN_WIDTH, Math.round(next))) })
     },
     onPointerUp: function (event) {
       if (dragging.current !== null) rememberWidth(state.width)
@@ -1133,6 +1158,7 @@ exports.internals = {
   isDependencyPath: isDependencyPath,
   resolveListedPath: resolveListedPath,
   initialWidth: initialWidth,
+  maxWidth: maxWidth,
   collectMarkdownPaths: collectMarkdownPaths,
   resolveFromDocument: resolveFromDocument,
   rewriteLocalImages: rewriteLocalImages,

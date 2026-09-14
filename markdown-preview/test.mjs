@@ -269,6 +269,14 @@ assert.equal(toggleRegistration.declaration.id, 'markdown-preview')
 assert.equal(overlayRegistration.declaration.id, 'markdown-preview')
 assert.ok(styles.length >= 1, 'the stylesheet is injected')
 assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), 'the tag is keyed by the sheet content, so a hot-reloaded bundle replaces it')
+// The panel's share contract: the document owns it, the file lists are an
+// aside capped at a fifth of the height.
+{
+  const css = String(styles[0].textContent)
+  assert.match(css, /\.dsv-mp-picker\{[^}]*max-height:20vh/, 'the file lists are capped at a fifth of the panel')
+  assert.match(css, /\.dsv-mp-body\{[^}]*flex:1/, 'the document body takes everything else')
+  assert.ok(!/\.dsv-mp-list\{[^}]*max-height/.test(css), 'the lists do not scroll separately from the aside that holds them')
+}
 
 // The Definition collects mentions in message order.
 {
@@ -315,6 +323,9 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   const drawer = render(overlay)
   assert.equal(drawer.type, 'aside')
   assert.equal(drawer.props.style.width, `${client.internals.initialWidth()}px`, 'the opening width follows the viewport, not a fixed 460px')
+  // The document owns the screen: 80% of the viewport, with a strip of frame left.
+  assert.equal(client.internals.initialWidth(), 960, '80% of the 1200px test viewport')
+  assert.ok(client.internals.maxWidth() <= 1200 - 240, 'the frame keeps a strip visible however wide the drawer is dragged')
   assert.equal(drawer.props['aria-label'], 't:title')
   const parts = drawer.children.filter(Boolean).map((child) => child.type)
   assert.ok(parts.includes('div'), 'the header and body are rendered')

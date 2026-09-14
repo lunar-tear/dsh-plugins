@@ -701,10 +701,10 @@ function followTarget(current) {
  * for telling a real mention apart from a path that only looks like one.
  * @param cwd - the workspace root, or null while unknown.
  */
-function loadListing(cwd) {
+function loadListing(cwd, force) {
   if (cwd === null || cwd === undefined) return
   var now = Date.now()
-  if (state.filesCwd === cwd && now - state.filesAt < LISTING_TTL_MS) return
+  if (force !== true && state.filesCwd === cwd && now - state.filesAt < LISTING_TTL_MS) return
   if (state.filesPending) return
   if (state.filesCwd !== cwd) update({ filesCwd: cwd, files: [], filePaths: [], filesStatus: "loading", filesTruncated: false })
   else update({ filesStatus: "loading" })
@@ -823,6 +823,14 @@ function PreviewToggle(props) {
     // rather than only when the drawer opens.
     loadListing(cwd === undefined ? null : cwd)
   }, [sessionId, cwd])
+
+  // A document the conversation has just named is the one case where the cache
+  // is guaranteed stale — the agent wrote the file seconds ago — so the listing
+  // is refetched past its TTL whenever this session's mentions change.
+  var mentionCount = mentionsOf(plugin).length
+  useEffect(function () {
+    loadListing(plugin.cwd, true)
+  }, [plugin.sessionId, mentionCount])
   // Auto-open is gated on the session actually running: a document named while
   // the agent works is news, while entering a conversation that already named
   // one is not — that would pop a panel over every old session the reader opens.

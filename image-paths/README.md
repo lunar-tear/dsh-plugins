@@ -1,114 +1,105 @@
+[English](README.en.md) | 中文
+
 # dsh-image-paths
 
-Renders a local image path written anywhere in the conversation as the picture
-itself, right below the content that named it. Both halves are plain JavaScript —
-no build step, no `node_modules`, nothing added to the DSH checkout.
+对话中任何位置写下的本地图片路径，都会被渲染成图片本身，就显示在提到它的那段内容
+正下方。前后两半都是纯 JavaScript —— 无需构建步骤，无需 `node_modules`，也不会往
+DSH 检出目录里添加任何东西。
 
-## What it does
+## 功能
 
-Write a workspace-relative image path — in your reply, in your thinking, or as
-the output of a tool — and the image appears:
+只要写下一个相对于工作区的图片路径 —— 写在回复里、思考里，或者作为某个工具的
+输出 —— 图片就会出现：
 
 ```markdown
 改完了，对比图见 docs/1产品介绍/images/mobile软件.png
 ```
 
-Everywhere an image path can show up in the transcript is scanned:
+凡是图片路径可能出现在对话记录中的地方，都会被扫描：
 
-| Source | Example |
+| 来源 | 示例 |
 |---|---|
-| The assistant's reply | `对比图见 outputs/run7/curve.png` |
-| **The model's reasoning / thinking** | a path written while working the problem out |
-| **Tool output** | a script that printed `saved logs/figures/sweep.png`, `ls`, `grep` results |
-| Your own message | pasting a path instead of the file |
-| Markdown image syntax and inline code | `![x](figure.png)`, `` `docs/x.png` `` |
-| **A bare filename** | `retarget.png` with no directory — see below |
+| 助手回复 | `对比图见 outputs/run7/curve.png` |
+| **模型的推理 / 思考** | 解题过程中写下的路径 |
+| **工具输出** | 打印了 `saved logs/figures/sweep.png` 的脚本输出、`ls`、`grep` 的结果 |
+| 你自己发的消息 | 直接粘贴路径而不是文件 |
+| Markdown 图片语法与行内代码 | `![x](figure.png)`、`` `docs/x.png` `` |
+| **裸文件名** | 不带目录的 `retarget.png` —— 见下文 |
 
-One gallery per **conversation step** — the assistant message and the tool
-results it asked for — anchored at the last event that contributed, so the
-gallery sits at the end of that step's content instead of drifting while the
-step runs. A message *you* send gets its own gallery attached to that message,
-so it stays put while the reply streams in below.
+每个**对话步骤**（助手消息，以及它请求的工具结果）对应一个图库，锚定在最后一个
+有贡献的事件上，因此图库会停在该步骤内容的末尾，而不会在步骤执行过程中到处漂移。
+*你*发送的消息则把图库挂在消息本身上，这样回复在下方流式输出时它会待在原地。
 
-Click a thumbnail for the original (Escape, or a click anywhere, closes it). It
-works retroactively: everything already in the loaded history gets its gallery,
-not just new events. At most 8 images per gallery, and at most 20,000 characters
-scanned per fragment, so a megabyte-sized tool log cannot slow the chat down.
+点击缩略图可查看原图（按 Escape 或点击任意位置即可关闭）。它对历史记录同样生效：
+已经加载的历史里的所有内容都会有图库，而不只是新事件。每个图库最多 8 张图片，每段
+内容最多扫描 20,000 个字符，所以一份兆字节级的工具日志不会拖慢聊天。
 
-## What it deliberately ignores
+## 有意忽略的内容
 
-| Input | Why |
+| 输入 | 原因 |
 |---|---|
-| `` ```fenced``` `` code blocks | transcripts and examples, not disclosures |
-| `http(s)://…/x.png` | a remote image is not a local file |
-| `~/…` paths | the route only serves files inside the session workspace |
-| a path that does not resolve | the thumbnail removes itself instead of showing a broken image |
+| `` ```fenced``` `` 代码块 | 那是记录和示例，不是要展示的内容 |
+| `http(s)://…/x.png` | 远程图片不是本地文件 |
+| `~/…` 路径 | 该路由只提供会话工作区内的文件 |
+| 无法解析的路径 | 缩略图会自动移除，而不是显示一张裂图 |
 
-### Bare filenames
+### 裸文件名
 
-A name with no directory (`retarget.png`, the way a model usually refers to a
-figure it just produced) is resolved by the host against the workspace:
+不带目录的名字（比如 `retarget.png`，模型通常这样指代它刚生成的图）由宿主在工作区
+中解析：
 
-- **exactly one file matches** → that file is shown;
-- **several match** (the common case once a project keeps one directory per run)
-  → the **newest** is shown, and the caption under the thumbnail names the file
-  it actually resolved to (`retarget.png → outputs/run7/retarget.png`), so a
-  wrong run's figure is visible as such rather than silently passed off;
-- **nothing matches** → nothing is shown.
+- **恰好匹配一个文件** → 显示该文件；
+- **匹配到多个**（一个项目每次运行保留一个目录时，这就是常见情况）→ 显示**最新的**
+  那个，缩略图下方的说明会写明它实际解析到的文件
+  （`retarget.png → outputs/run7/retarget.png`），这样取错运行结果的图会被看出来，
+  而不是被悄悄蒙混过去；
+- **什么都没匹配到** → 什么都不显示。
 
-The lookup answers `200` with a verdict either way, so a name that resolves to
-nothing leaves no failed request in the browser console. Results are cached per
-workspace for 30 seconds, so a file that appears later is picked up.
+无论能否解析，该查询都返回 `200` 并带上判定结果，因此解析不到任何文件的名字不会在
+浏览器控制台里留下失败请求。结果按工作区缓存 30 秒，所以之后出现的文件仍会被识别到。
 
-Paths glued to Chinese prose work (`见docs/x.png`); inline code (`` `docs/x.png` ``)
-and markdown image syntax (`![x](docs/x.png)`) are both mentions.
+紧贴中文的路径也能识别（`见docs/x.png`）；行内代码（`` `docs/x.png` ``）和 Markdown
+图片语法（`![x](docs/x.png)`）都算作一次提及。
 
-## How it is built
+## 实现方式
 
-| Half | File | Role |
+| 半边 | 文件 | 作用 |
 |---|---|---|
-| Host | `index.js` | two read-only routes: `GET …/raw?path=…&cwd=…` serves one image file, and `GET …/resolve?name=…&cwd=…` turns a bare filename into the file it means (bounded, cached workspace walk) |
-| Browser | `client.js` | a Conversation Definition, keyed per step (and per user message), plus the Chat node view that renders the thumbnails |
+| 宿主 | `index.js` | 两条只读路由：`GET …/raw?path=…&cwd=…` 提供一个图片文件，`GET …/resolve?name=…&cwd=…` 把裸文件名转换成它实际指向的文件（有边界、带缓存的工作区遍历） |
+| 浏览器 | `client.js` | 一个 Conversation Definition，按步骤（以及按用户消息）分键，加上渲染缩略图的 Chat 节点视图 |
 
-The node kind's own **length** is a load-bearing detail: the Chat view breaks
-ties between nodes sharing an anchor sequence by comparing keys, a key is
-`<kind.length>:<kind><id>`, and every shipped kind's key starts with a digit
-below 5 — so the 50-character kind here is what makes the gallery land *below*
-the message it belongs to rather than above it. Renaming it without keeping it
-50 characters long silently reorders the gallery, which the test asserts.
+节点类型自身的**长度**是个关键细节：Chat 视图在比较锚定到同一序列的节点时靠比较
+键来打破平局，键的形式是 `<kind.length>:<kind><id>`，而已发布的所有类型的键都以
+小于 5 的数字开头 —— 所以这里 50 个字符的类型，正是让图库落在所属消息*下方*而不是
+上方的关键。如果改名却不保持 50 个字符的长度，图库顺序会被悄悄改变，测试对此有断言。
 
-Why a route instead of a durable session event: the shipped client can only read
-image bytes through an **attachment referenced by a session event**, and an
-out-of-tree event type is refused by the persistence read path unless the writer
-marks it `ignorable: true` — which `Session.append` cannot set. Writing one
-would leave the session log unreadable on the next load. This route carries the
-bytes with no durable footprint, so nothing in the session format changes.
+为什么用路由而不是持久的会话事件：已发布的客户端只能通过**被会话事件引用的附件**
+读取图片字节，而树外的事件类型会被持久化读取路径拒绝，除非写入方把它标记为
+`ignorable: true` —— 这是 `Session.append` 设置不了的。硬写一个会令会话日志在下次
+加载时无法读取。这条路由只携带字节、不留下持久痕迹，因此会话格式没有任何变化。
 
-Placement is deliberate: the Definition anchors its node at the message's own
-`seq`, and node keys sort as `"<kind length>:<kind><id>"`, so the 18-character
-kind sorts after `14:assistant-step` and the gallery lands below the message.
+位置是刻意安排的：Definition 把它的节点锚定在消息自身的 `seq` 上，而节点键按
+`"<kind length>:<kind><id>"` 排序，所以 18 个字符的类型排在 `14:assistant-step`
+之后，图库就落在消息下方。
 
-## Access model
+## 访问模型
 
-The route returns a file only when all of these hold: the path carries a
-supported image extension (`.png/.jpg/.jpeg/.webp/.gif`), the extension's magic
-bytes match the content, the file is a regular file of at most 32 MiB, and its
-**real** path (symlinks resolved) lies inside the session workspace root the
-client supplied. The `Host` header must name loopback
-(`127.0.0.1`/`localhost`/`[::1]`) — the guard against DNS rebinding, since a
-rebound name would otherwise look same-origin. Requests a browser marks as
-cross-site are refused, so a page the user happens to visit cannot use the route
-to probe local files. Non-browser callers (curl, tests) send none of those
-headers and are trusted as loopback callers, the same trust the rest of the
-local GUI assumes. A deployment that binds the GUI to a non-loopback interface
-must widen `loopbackHost` in `index.js`.
+只有在下列条件全部成立时，路由才会返回文件：路径带有受支持的图片扩展名
+（`.png/.jpg/.jpeg/.webp/.gif`）、扩展名对应的魔术字节与内容一致、该文件是常规文件
+且不超过 32 MiB，并且它的**真实**路径（已解析符号链接）位于客户端提供的会话工作区
+根目录之内。`Host` 头必须指明回环地址（`127.0.0.1`/`localhost`/`[::1]`）—— 这是
+针对 DNS 重绑定的防护，因为被重绑定的域名否则会看起来同源。浏览器标记为跨站的请求
+会被拒绝，所以用户碰巧访问的页面无法借助这条路由探测本地文件。非浏览器调用方
+（curl、测试）不发送这些头，会被当作回环调用方信任，这与本地 GUI 其余部分所假定
+的信任级别相同。如果把 GUI 绑定到非回环网卡，就必须放宽 `index.js` 里的
+`loopbackHost`。
 
-## Enable / disable
+## 启用 / 禁用
 
-Two ways in. `../install.sh --link` does the first one for you.
+两种接入方式。`../install.sh --link` 会替你完成第一种。
 
-**1. Copy (or symlink) the directory into the harness home and add one row** —
-takes effect live, no `dsh web` restart:
+**1. 把目录复制（或软链接）到 harness home，并添加一行配置** —— 即时生效，无需重启
+`dsh web`：
 
 ```sh
 cp -r image-paths ~/.dsh/plugins/dsh-image-paths
@@ -121,22 +112,20 @@ cp -r image-paths ~/.dsh/plugins/dsh-image-paths
       name: 'file:///home/<you>/.dsh/plugins/dsh-image-paths/index.js'
 ```
 
-**2. Install it as a profile bundle** — the row then comes from this package's
-own `cordis.patch.yml`, but the bundle list is read at boot, so this one needs a
-`dsh web` restart:
+**2. 作为 profile bundle 安装** —— 那一行随后来自本包自带的 `cordis.patch.yml`，但
+bundle 列表是在启动时读取的，所以这种方式需要重启 `dsh web`：
 
 ```sh
 dsh plugin --profile web add /path/to/dsh-plugins/image-paths
 ```
 
-Do not do both: two active Loader sources for one package name is an error.
+不要两种都做：同一个包名有两个活跃的 Loader 源会报错。
 
-The `web` profile applies user patch edits live, so adding or removing the row
-takes effect without restarting `dsh web`; a **page reload** is what loads or
-drops the browser half. Removing the row is the whole off switch — the route and
-the view both disappear together.
+`web` profile 会实时应用用户补丁改动，所以增删那一行无需重启 `dsh web` 即可生效；
+**刷新页面**才会加载或卸载浏览器那一半。删除那一行就是完整的关闭开关 —— 路由和视图
+会一起消失。
 
-Verify from a shell, without the GUI token:
+在 shell 里验证，无需 GUI token：
 
 ```sh
 curl -sN --max-time 3 http://127.0.0.1:3080/plugins/events | grep -o '"id":"[^"]*"'   # roster, expect dsh-image-paths
@@ -144,21 +133,20 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
   "http://127.0.0.1:3080/plugin/image-paths/raw?path=images/ecmaster-zero.png&cwd=$PWD"   # 200 image/png
 ```
 
-## Changing the code
+## 修改代码
 
-| Half | How a change takes effect |
+| 半边 | 改动如何生效 |
 |---|---|
-| `client.js` | Just save it. The host stat-polls every served bundle (~500 ms) and pushes a reload frame, so an open page hot-swaps the plugin — no reload, no watcher process. |
-| `index.js` | Bump the `?v=` in the row (the patch watcher applies it within a second), because Node caches ES modules per URL — re-inserting the same URL re-uses the already-loaded module. A `dsh web` restart also works. |
+| `client.js` | 直接保存即可。宿主会对每个已提供的 bundle 做 stat 轮询（约 500 ms）并推送重载帧，所以已打开的页面会热替换该插件 —— 无需刷新，也无需 watcher 进程。 |
+| `index.js` | 把那一行里的 `?v=` 递增（补丁 watcher 会在一秒内应用它），因为 Node 按 URL 缓存 ES 模块 —— 重新插入同一个 URL 会复用已加载的模块。重启 `dsh web` 也可以。 |
 
-## Test
+## 测试
 
 ```sh
 node test.mjs
 ```
 
-Drives both halves without the harness: the browser bundle through its real
-`__ModuleLoader__.load` handshake with a React stub (extraction, Definition
-matching, node materialization, rendered `src`), and the host half against real
-files (sniffing, containment, traversal and symlink refusal, cross-site and
-rebound-host refusal).
+无需 harness 即可驱动前后两半：浏览器 bundle 通过它真实的 `__ModuleLoader__.load`
+握手配合一个 React stub（提取、Definition 匹配、节点物化、渲染出的 `src`），宿主
+那一半则针对真实文件（嗅探、包含性校验、目录穿越与符号链接拒绝、跨站与被重绑定的
+Host 拒绝）。

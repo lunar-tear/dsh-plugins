@@ -1,22 +1,19 @@
+[English](README.en.md) | 中文
+
 # dsh-plugins
 
-Two out-of-tree plugins for the [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
-(`dsh`) web GUI, plus the install tooling and the notes that make third-party
-plugins possible at all.
+面向 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（`dsh`）Web GUI 的两个体外插件（out-of-tree plugin），外加安装工具，以及那些让第三方插件得以成立的说明。
 
-They are plain JavaScript: **no build step, no `node_modules`, no fork of the
-harness.** Each plugin is one package with a host half and a browser half, and
-both halves are loaded from where they sit on disk.
+它们都是纯 JavaScript：**没有构建步骤，不用 `node_modules`，也不 fork 本体。** 每个插件都是一个包，由宿主端和浏览器端两部分组成，两部分都直接从它们在磁盘上的位置加载。
 
-| Plugin | What it does |
+| 插件 | 作用 |
 |---|---|
-| [`image-paths`](image-paths/README.md) | An image path written in a chat message renders as the image itself, right under that message — no attachment commits, no session-log writes. |
-| [`markdown-preview`](markdown-preview/README.md) | A Markdown preview drawer beside the conversation: the shell's own renderer (TeX/KaTeX, code highlighting, tables, task lists, footnotes) plus a document's local images, following whichever `.md` the conversation is talking about. |
+| [`image-paths`](image-paths/README.md) | 聊天消息里写下的图片路径会直接在该消息下方渲染成图片本身——不需要提交附件，也不写会话日志。 |
+| [`markdown-preview`](markdown-preview/README.md) | 会话旁的 Markdown 预览抽屉：使用外壳自带的渲染器（TeX/KaTeX、代码高亮、表格、任务列表、脚注），并显示文档中的本地图片，跟随会话当前讨论的那个 `.md` 文件。 |
 
-Both were built and verified against a live `dsh web` (profile `web`), including
-hot-activation without restarting the server.
+两者都是在运行中的 `dsh web`（profile 为 `web`）上构建并验证的，包括无需重启服务器即可热激活。
 
-## Install
+## 安装
 
 ```sh
 git clone https://github.com/<you>/dsh-plugins
@@ -25,63 +22,41 @@ cd dsh-plugins
 # or ./install.sh --link  # symlink instead, so edits in this repo are live
 ```
 
-Then **reload the GUI page** once: the host halves are mounted the moment the
-profile patch changes, but the browser halves are part of the page's module
-graph, so a reload is what loads (or drops) them.
+然后**重新加载一次 GUI 页面**：profile patch 一发生变化，宿主端就会挂载，但浏览器端属于页面的模块图，因此要靠重新加载才会载入（或卸载）它们。
 
-`./install.sh --uninstall` removes the plugin directories and the rows it
-wrote, restoring `[]` (or your own entries) in the patch layer.
+`./install.sh --uninstall` 会删除插件目录和它写入的那些行，把 patch 层恢复为 `[]`（或你自己的条目）。
 
-The script is idempotent and replaces the patch file **atomically** — the
-running server watches that file and rejects a partially written patch, so a
-naive in-place edit can leave a plugin half-registered.
+该脚本是幂等的，并且**原子地**替换 patch 文件——运行中的服务器会监视这个文件，并拒绝写入不完整的 patch，所以直接就地编辑可能让插件处于半注册状态。
 
-### The other install route
+### 另一种安装方式
 
-Each plugin also declares `dsh.bundle`, so it can be installed as a profile
-layer the supported way:
+每个插件还声明了 `dsh.bundle`，因此也可以按官方支持的方式作为 profile 层安装：
 
 ```sh
 dsh plugin --profile web add /path/to/dsh-plugins/image-paths
 ```
 
-That path is cleaner for distribution but writes to `dsh.profile.bundles`,
-which is read at boot — so it needs a `dsh web` restart, where `install.sh`
-takes effect live. Do not use both for the same plugin: two active Loader
-sources for one package name is an error.
+这种方式在分发时更干净，但它写入的是 `dsh.profile.bundles`，而该处只在启动时读取——所以需要重启 `dsh web`；而 `install.sh` 是实时生效的。同一个插件不要两种方式同时用：同一个包名有两个活跃的 Loader 来源会报错。
 
-## Is there a plugin marketplace?
+## 有插件市场吗？
 
-**No.** There is no registry, store or plugin index in `dsh` — no
-`dsh plugin search`, no catalog page, and nothing in the repo's docs beyond the
-"package and install a plugin" tutorial. The distribution model is:
+**没有。** `dsh` 里没有注册表、商店或插件索引——没有 `dsh plugin search`，没有目录页面，仓库文档里除了一篇“打包并安装插件”的教程也没有别的内容。分发模型是这样的：
 
-| Unit | Declares | Installed by |
+| 单元 | 声明什么 | 由谁安装 |
 |---|---|---|
-| a plain package | nothing special — a library other plugins import | `dsh plugin --profile <p> add <spec>` (a pnpm forwarder) |
-| a **bundle** | `dsh.bundle.patch` → its own `cordis.patch.yml` layer | `dsh plugin … add <spec>`, which also appends it to `dsh.profile.bundles` |
-| a **client plugin row** | `dsh.client` + an `exports["./client"]` bundle | any enabled Loader row, wherever the row's specifier resolves from |
+| 普通包 | 没什么特别的——就是一个供其他插件 import 的库 | `dsh plugin --profile <p> add <spec>`（一个 pnpm 转发器） |
+| **bundle** | `dsh.bundle.patch` → 它自己的 `cordis.patch.yml` 层 | `dsh plugin … add <spec>`，同时会把它追加到 `dsh.profile.bundles` |
+| **client plugin row** | `dsh.client` + 一个 `exports["./client"]` bundle | 任何已启用的 Loader 行，只要该行的 specifier 能解析到 |
 
-`<spec>` is anything pnpm accepts — a registry name, a git URL, a tarball, a
-local path. So "publishing" a plugin today means putting the package somewhere
-pnpm can fetch it (npm, or a git repo like this one) and telling people the row
-to add. This repository is therefore a marketplace only in the sense of "a git
-repo you can install from".
+`<spec>` 可以是 pnpm 接受的任何东西——注册表包名、git URL、tarball、本地路径。所以今天“发布”一个插件，就是把包放到 pnpm 能取到的地方（npm，或者像本仓库这样的 git 仓库），再告诉别人该添加哪一行。因此本仓库只是一个“你可以从中安装的 git 仓库”意义上的市场。
 
-## What makes an out-of-tree plugin work
+## 体外插件为什么能工作
 
-The pieces below are what this repo needed to discover; they are the reason the
-plugins here look the way they do.
+下面这些要点是本仓库摸索出来的；也正是它们决定了这里的插件为什么长成现在这个样子。
 
-**Packaging.** One package per plugin, `type: module`, with `exports` giving
-`"."` (host half) and `"./client"` (browser half) and a `dsh.client` manifest
-naming `platform: "web"`. The harness resolves the row's specifier, walks up to
-the nearest `package.json`, and serves that package's `./client` file to the
-browser. A row specifier may be a `file://` URL, which is what lets a plugin be
-loaded from a directory that no `node_modules` knows about.
+**打包。** 每个插件一个包，`type: module`，`exports` 提供 `"."`（宿主端）和 `"./client"`（浏览器端），还有一份 `dsh.client` manifest 声明 `platform: "web"`。本体会解析该行的 specifier，向上找到最近的 `package.json`，并把这个包的 `./client` 文件提供给浏览器。行的 specifier 可以是 `file://` URL，正因如此，插件才能从任何 `node_modules` 都不知道的目录里加载。
 
-**The browser bundle format.** The shell does not run your TypeScript; it loads
-a CJS factory wrapped in the module loader's handshake:
+**浏览器端 bundle 的格式。** 外壳不会运行你的 TypeScript；它加载的是一个 CJS 工厂函数，外面包着模块加载器的握手协议：
 
 ```js
 window.__ModuleLoader__.load({ id: '<package name>', factory: (require) => {
@@ -91,79 +66,38 @@ window.__ModuleLoader__.load({ id: '<package name>', factory: (require) => {
 } })
 ```
 
-The module table seeds only `react`, `react/jsx-runtime`, `react-dom`,
-`react-dom/client`, `@deepseek-ai/cordis`, `@deepseek-ai/dsh-client-store`,
-`@deepseek-ai/dsh-client-ui-slots` and
-`@deepseek-ai/dsh-client-ui-primitives` — so a hand-written bundle can use
-React, the store, the slot registry and the UI primitives (including the
-Markdown renderer) without any build pipeline. Anything else must be inlined or
-reached through a Cordis service.
+模块表只预置了 `react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots` 和 `@deepseek-ai/dsh-client-ui-primitives`——所以手写的 bundle 无需任何构建流水线，就能使用 React、store、slot 注册表和 UI 原语（包括 Markdown 渲染器）。除此之外的东西都必须内联，或者通过 Cordis 服务获取。
 
-**Where plugin UI can appear.** The usable seats for a third-party row are the
-shipped slots: `conversation.chat.node` (keyed renderers for your own
-Conversation node kind), `conversation.session.header.utilities` and
-`…header.actions` (session-scoped list seats), `shell.overlay` (a root-scoped
-list seat inside the frame's overlay layer — the one a side panel or drawer
-should use), plus the tool/attachment/settings seats. The conversation's
-`details` column and the sidebar take a single occupant each, so a plugin
-cannot add a tab there.
+**插件 UI 能出现在哪里。** 对第三方行来说，可用的席位就是外壳发布的那些 slot：`conversation.chat.node`（为你自己的 Conversation 节点类型提供的按键渲染器）、`conversation.session.header.utilities` 和 `…header.actions`（会话作用域的列表席位）、`shell.overlay`（frame 的 overlay 层里一个根作用域的列表席位——侧边面板或抽屉应该用这个），再加上 tool/attachment/settings 这几个席位。会话的 `details` 列和侧边栏各自只能有一个占用者，所以插件无法在那里加标签页。
 
-**Live activation.** A profile with `patchReload: live` (the shipped `web`
-profile) watches its user patch layer and re-composes without a restart, so a
-row added to `~/.dsh/profiles/web/cordis.patch.yml` mounts within a second. The
-browser half still needs a page reload — the HMR receiver deliberately ignores
-graph changes, because the boot graph is the initial-load record. Editing an
-*already loaded* `lib/client.js` is different: the host stat-polls served
-bundles and pushes a rebuild frame, so that hot-swaps with no reload at all.
+**实时激活。** 带 `patchReload: live` 的 profile（随外壳发布的 `web` profile 就是）会监视它的用户 patch 层并重新组装，无需重启，因此添加到 `~/.dsh/profiles/web/cordis.patch.yml` 的一行会在一秒内挂载。浏览器端仍然需要刷新页面——HMR 接收器有意忽略模块图变化，因为启动时的模块图是初始加载的记录。编辑*已经加载*的 `lib/client.js` 则不同：宿主端会 stat 轮询所服务的 bundle 并推送一个 rebuild 帧，因此这种修改完全不用刷新就能热替换。
 
-**The host half is not hot.** Node caches ES modules per URL, so re-applying a
-row with the same specifier re-uses the module it already imported — a changed
-`index.js` needs a fresh URL (a `?v=` query on the row, applied by the same
-patch watcher) or a server restart. Both plugins' READMEs say so.
+**宿主端不是热的。** Node 按 URL 缓存 ES 模块，所以用相同 specifier 重新应用同一行会复用它已经导入过的那个模块——改动过的 `index.js` 需要一个新的 URL（在行上加 `?v=` 查询参数，由同一个 patch 监视器应用），或者重启服务器。两个插件的 README 都写明了这一点。
 
-**Reading files without inventing new seams.** Two tempting approaches do not
-work for a third-party plugin and are worth knowing before you try them:
+**读取文件，而不另造新的接缝。** 有两种看起来诱人的做法对第三方插件行不通，值得在你动手尝试之前先了解：
 
-- *Attachments.* The browser can only read image bytes through an attachment
-  that a **session event references**, and the endpoint that serves it checks
-  the session log for that reference.
-- *Your own session event.* Appending a custom event type makes the session log
-  unreadable: the persistence read path refuses any type outside the harness's
-  known vocabulary unless the writer marked it `ignorable: true`, and
-  `Session.append` cannot set that marker. It would poison the log on the next
-  load.
+- *附件。* 浏览器只能通过**被会话事件引用**的附件来读取图片字节，而提供该附件的 endpoint 会到会话日志里核对该引用。
+- *你自己的会话事件。* 追加自定义事件类型会让会话日志无法读取：持久化读取路径会拒绝本体已知词汇表之外的任何类型，除非写入方把它标记为 `ignorable: true`，而 `Session.append` 无法设置该标记。它会在下次加载时把日志毒化。
 
-So both plugins serve bytes over a small read-only HTTP route registered on the
-host (`ctx.webServer.register`) and do their rendering client-side from the
-messages that are already in the log. That keeps the session format untouched
-and works retroactively for history. The routes enforce the same guard set:
-loopback `Host` only, same-origin for browser callers, real-path containment
-inside the caller's workspace, an extension allowlist, magic-byte agreement, and
-a size cap.
+所以两个插件都通过宿主端注册的一个小型只读 HTTP 路由（`ctx.webServer.register`）来提供字节，并在客户端根据日志里已有的消息完成渲染。这样会话格式保持不变，而且对历史记录也能追溯生效。这些路由执行同一套防护：只允许 loopback 的 `Host`、对浏览器调用方要求同源、真实路径必须位于调用方工作区内、扩展名白名单、magic byte 一致，以及大小上限。
 
-## Requirements
+## 环境要求
 
-- A `dsh` install whose web profile you can patch (`~/.dsh/profiles/web`).
-- The web GUI over loopback (both plugins refuse non-loopback `Host` headers and
-  cross-site requests; a LAN-bound deployment must widen `loopbackHost` in each
-  `index.js`).
-- Node 22+ to run the tests.
+- 一份可以修改其 web profile 的 `dsh` 安装（`~/.dsh/profiles/web`）。
+- Web GUI 通过 loopback 访问（两个插件都会拒绝非 loopback 的 `Host` 头和跨站请求；如果要部署在局域网上，必须在各自的 `index.js` 里放宽 `loopbackHost`）。
+- Node 22+，用于运行测试。
 
-## Tests
+## 测试
 
-Each plugin ships a `test.mjs` that needs no harness, no browser and no network:
+每个插件都附带一个 `test.mjs`，不需要本体、不需要浏览器，也不需要网络：
 
 ```sh
 node image-paths/test.mjs
 node markdown-preview/test.mjs
 ```
 
-They drive the browser halves through the real `__ModuleLoader__.load`
-handshake with a React stub and a stubbed `fetch`, and the host halves against
-real temporary files — including the refusals (parent traversal, symlink escape,
-cross-site, DNS-rebinding, non-image bytes, oversized files, …).
+它们用一个 React 桩和打桩的 `fetch`，让浏览器端走真实的 `__ModuleLoader__.load` 握手；宿主端则针对真实的临时文件运行——包括各种拒绝场景（父目录穿越、符号链接逃逸、跨站、DNS rebinding、非图片字节、超大文件……）。
 
-## License
+## 许可证
 
-No license file yet — the code is yours to license as you like. The harness it
-targets is MIT.
+目前还没有 license 文件——代码归你，随你按自己的意愿授权。它所面向的本体是 MIT。

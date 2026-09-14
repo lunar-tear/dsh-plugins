@@ -64,7 +64,38 @@ var LISTING_TTL_MS = 15000
 /** Drawer width bounds, in px. */
 var MIN_WIDTH = 320
 var MAX_WIDTH = 900
-var DEFAULT_WIDTH = 460
+/** Share of the viewport the drawer takes when nothing has been dragged yet. */
+var DEFAULT_WIDTH_RATIO = 0.45
+/** Where the dragged width is remembered. */
+var WIDTH_KEY = "dsh-markdown-preview:width"
+
+/**
+ * The drawer's opening width: what the reader last dragged it to, else a share
+ * of the viewport — a fixed 460px is cramped for prose with tables and figures.
+ * @returns the width in px, clamped to the drag range.
+ */
+function initialWidth() {
+  if (typeof localStorage !== "undefined") {
+    try {
+      var stored = Number(localStorage.getItem(WIDTH_KEY))
+      if (Number.isFinite(stored) && stored >= MIN_WIDTH && stored <= MAX_WIDTH) return stored
+    } catch {
+      // Private mode: fall through to the viewport share.
+    }
+  }
+  var viewport = typeof window !== "undefined" && typeof window.innerWidth === "number" ? window.innerWidth : 1200
+  return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(viewport * DEFAULT_WIDTH_RATIO)))
+}
+
+/** Remember the width the reader dragged the drawer to. */
+function rememberWidth(width) {
+  if (typeof localStorage === "undefined") return
+  try {
+    localStorage.setItem(WIDTH_KEY, String(width))
+  } catch {
+    // Private mode or a full quota: the width is a convenience, never a failure.
+  }
+}
 /** Markdown path token: an ASCII path start, then anything that cannot end a path. */
 var MD_TOKEN = /[A-Za-z0-9_.@~+-][^\s`"'()[\]{}<>|,;:，。；：、！？]*\.(?:md|markdown|mdown)\b/gi
 /** A URL scheme, so a remote link is never treated as a workspace path. */
@@ -220,6 +251,12 @@ function collectMarkdownPaths(text) {
   return paths
 }
 
+/** The basename of a workspace-relative path. */
+function basenameOf(path) {
+  var cut = path.lastIndexOf("/")
+  return cut === -1 ? path : path.slice(cut + 1)
+}
+
 /** The directory part of a workspace-relative path. */
 function dirnameOf(path) {
   var cut = path.lastIndexOf("/")
@@ -296,7 +333,7 @@ var INITIAL = {
   manual: false,
   mentioned: [],
   rejected: [],
-  width: DEFAULT_WIDTH,
+  width: initialWidth(),
   /** Workspace Markdown listing: `{ path, size, mtime }` rows plus their paths. */
   files: [],
   filePaths: [],
@@ -343,6 +380,86 @@ function selectPath(path) {
     mention(path)
     rememberPath(state.cwd, path)
   }
+}
+
+/**
+ * The listing path one prose token names: the exact row, or the basename when
+ * exactly one row carries it (two rows sharing a basename stay inert rather
+ * than opening the wrong document).
+ * @param token - the inline-code token, exactly as authored.
+ * @returns the listed path, or null.
+ */
+function resolveListedPath(token) {
+  var listed = state.filePaths
+  if (listed.length === 0) return null
+  if (listed.indexOf(token) !== -1) return token
+  if (token.indexOf("/") !== -1) return null
+  var matches = listed.filter(function (path) { return basenameOf(path) === token })
+  return matches.length === 1 ? matches[0] : null
+}
+
+/**
+ * The preview opener for one prose token, when it names a Markdown file this
+ * workspace has.
+ * @param value - the token the chat view hands to a mention resolver.
+ * @returns the mention, or undefined so the caller's own resolver decides.
+ */
+function previewMention(value) {
+  if (typeof value !== "string") return undefined
+  var token = value.trim()
+  if (token === "" || token.length > 1024) return undefined
+  if (!/\.(?:md|markdown|mdown)$/i.test(token)) return undefined
+  var path = resolveListedPath(token)
+  if (path === null) return undefined
+  return {
+    label: token,
+    title: path,
+    open: function () {
+      selectPath(path)
+      update({ open: true })
+    },
+  }
+}
+
+/**
+ * Make a Markdown path written in prose open the preview panel.
+ *
+ * The chat view asks `chatFileMentions` for the prose vocabulary of one closing
+ * Turn, and the shipped provider (`ui-deliverables`) links the files that Turn's
+ * mutation tools touched — clicking one opens the Host editor. Cordis refuses a
+ * second provider of the same service name, so this wraps the existing one
+ * instead: a Markdown file this workspace has opens the panel, and everything
+ * else still resolves through the original provider untouched. The wrapper goes
+ * away with the plugin and never replaces the original resolver's answer.
+ * @param ctx - the client root context.
+ */
+function installMentionInterception(ctx) {
+  var service = ctx.get("chatFileMentions")
+  if (service === null || service === undefined || typeof service.forClosing !== "function") return
+  if (service.forClosing.__dshMarkdownPreview === true) return
+  var previous = service.forClosing
+  var wrapped = function (owner) {
+    var theirs
+    try {
+      theirs = previous.call(service, owner)
+    } catch {
+      theirs = undefined
+    }
+    return {
+      resolve: function (value) {
+        var mine = previewMention(value)
+        if (mine !== undefined) return mine
+        return theirs === undefined ? undefined : theirs.resolve(value)
+      },
+    }
+  }
+  wrapped.__dshMarkdownPreview = true
+  service.forClosing = wrapped
+  ctx.effect(function () {
+    return function () {
+      if (service.forClosing === wrapped) service.forClosing = previous
+    }
+  }, "markdown-preview: prose mention interception")
 }
 
 /** The store key remembering the file this workspace was last shown. */
@@ -684,6 +801,14 @@ function PreviewDrawer(props) {
 
   useEffect(function () { ensureStyles() }, [])
 
+  // Opening the preview collapses the frame's own right column: two panels
+  // fighting for the same edge leave neither of them readable.
+  var wasOpen = React.useRef(false)
+  useEffect(function () {
+    if (plugin.open && wasOpen.current === false && typeof props.onOpen === "function") props.onOpen()
+    wasOpen.current = plugin.open
+  }, [plugin.open])
+
   // Follow the conversation: whenever the newest mention changes, or a
   // followed file turned out not to resolve, re-target.
   useEffect(function () {
@@ -792,6 +917,7 @@ function DragHandle() {
       update({ width: Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, Math.round(next))) })
     },
     onPointerUp: function (event) {
+      if (dragging.current !== null) rememberWidth(state.width)
       dragging.current = null
       if (event.currentTarget.hasPointerCapture(event.pointerId)) {
         event.currentTarget.releasePointerCapture(event.pointerId)
@@ -906,6 +1032,7 @@ exports.apply = function apply(ctx) {
   ctx.uiConversation.events.register(mentionDefinition)
   ctx.slots.inject("conversation.chat.node", function () {
     return ctx.slots.register({ name: "conversation.chat.node", key: KIND }, function (props) {
+      installMentionInterception(ctx)
       return h(MarkdownFileChips, Object.assign({}, props, { t: t }))
     })
   })
@@ -919,14 +1046,32 @@ exports.apply = function apply(ctx) {
   ctx.slots.inject("shell.overlay", function () {
     return ctx.slots.register(
       { name: "shell.overlay", id: "markdown-preview" },
-      function () { return h(PreviewDrawer, { t: t }) },
+      function () {
+        return h(PreviewDrawer, {
+          t: t,
+          onOpen: function () {
+            var layout = ctx.get("layout")
+            if (layout !== null && layout !== undefined && typeof layout.closeDetails === "function") {
+              layout.closeDetails()
+            }
+            // Retried here as well: activation order decides whether the prose
+            // provider already existed when the plugin mounted, and this runs
+            // long after every row is up. It is idempotent.
+            installMentionInterception(ctx)
+          },
+        })
+      },
     )
   })
+  installMentionInterception(ctx)
 }
 
 /** Test seam: the bundle has no build step, so a spec drives the pure parts directly. */
 exports.internals = {
   KIND: KIND,
+  previewMention: previewMention,
+  resolveListedPath: resolveListedPath,
+  initialWidth: initialWidth,
   collectMarkdownPaths: collectMarkdownPaths,
   resolveFromDocument: resolveFromDocument,
   rewriteLocalImages: rewriteLocalImages,

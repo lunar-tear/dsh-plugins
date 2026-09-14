@@ -12,12 +12,19 @@ added to the DSH checkout.
 
 ## Using it
 
-**Click a file chip.** A message that names a Markdown file gets a row of chips
-under it — `docs/` muted, `implementation_plan.md` bold — and clicking one opens
-that file in the panel. Only files the workspace confirms are offered, so a chip
-always opens something; a path the model quoted from another checkout stays out
-of the row instead of becoming a dead click. The same paths remain available
-from the panel's own file list.
+**Click the file.** Two ways, both landing in the panel:
+
+- a **prose mention** — `docs/implementation_plan.md` written in the closing
+  message — now opens the panel instead of the Host editor (see below);
+- the **chips row** under a message that names Markdown files: `docs/` muted,
+  `implementation_plan.md` bold. Only files the workspace confirms are offered,
+  so a chip always opens something; a path the model quoted from another
+  checkout stays out of the row instead of becoming a dead click.
+
+Opening the panel also **collapses the frame's own right column** (the details
+panel), because two panels fighting for the same edge leave neither readable.
+The panel opens at 45% of the viewport — a fixed 460px is cramped for prose with
+tables and figures — and remembers the width you drag it to.
 
 1. Or click the preview toggle in the session header (the panel-with-document
    icon beside the session utilities) — the panel opens on the right.
@@ -81,11 +88,24 @@ neither header and are trusted as loopback callers, the same trust the rest of
 the local GUI assumes. A deployment that binds the GUI to a non-loopback
 interface must widen `loopbackHost` in `index.js`.
 
-## What the chips do not do
+## Why prose mentions are *wrapped*, not replaced
 
-They do not replace the shipped inline-code file mentions, which still open a
-file in the Host editor. The chips are the *render* path; the inline mentions
-remain the *edit* path.
+The chat view asks the `chatFileMentions` service for one closing Turn's prose
+vocabulary, and the shipped provider — `ui-deliverables` — links the files that
+Turn's mutation tools touched, opening them in the Host editor. That is the
+wrong verb for a plan document you want to read.
+
+The honest seam would be to provide a second implementation, but Cordis refuses
+it: `ctx.provide` throws when a service name is already registered. So this
+plugin **wraps the existing provider's `forClosing`**: a Markdown path this
+workspace has becomes a mention that opens the panel, and every other token is
+handed to the original resolver unchanged (its answer is never overridden). The
+wrapper is removed with the plugin, and it does nothing when the service is
+absent or has a different shape.
+
+If you would rather keep the editor as the click target everywhere, delete the
+`installMentionInterception(ctx)` call at the end of `apply` in `client.js`; the
+chips row keeps working.
 
 ## Enable / disable
 

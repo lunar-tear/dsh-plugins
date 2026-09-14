@@ -229,7 +229,18 @@ let toggleRegistration
 const chatNodeRegistrations = new Map()
 let overlayRegistration
 const dictionaries = []
+const layoutCalls = []
+const mentionService = {
+  forClosing: () => ({
+    resolve: (value) => (value === 'produced.txt' ? { label: value, title: value, open: () => {} } : undefined),
+  }),
+}
 const ctx = {
+  get: (name) => {
+    if (name === 'layout') return { closeDetails: () => layoutCalls.push('closeDetails') }
+    if (name === 'chatFileMentions') return mentionService
+    return undefined
+  },
   effect: (factory) => { factory(); return () => {} },
   locale: {
     register: (ns, dicts) => { dictionaries.push({ ns, dicts }); return () => {} },
@@ -301,7 +312,7 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   client.internals.update({ open: true })
   const drawer = render(overlay)
   assert.equal(drawer.type, 'aside')
-  assert.equal(drawer.props.style.width, '460px')
+  assert.equal(drawer.props.style.width, `${client.internals.initialWidth()}px`, 'the opening width follows the viewport, not a fixed 460px')
   assert.equal(drawer.props['aria-label'], 't:title')
   const parts = drawer.children.filter(Boolean).map((child) => child.type)
   assert.ok(parts.includes('div'), 'the header and body are rendered')
@@ -412,6 +423,52 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   const state2 = client.internals.state()
   assert.equal(state2.open, true, 'clicking a chip opens the panel')
   assert.equal(state2.path, 'docs/implementation_plan.md', 'on the file the chip named')
+  client.internals.update({ open: false })
+}
+
+// Prose mentions: a Markdown path this workspace has opens the panel; anything
+// else keeps resolving through the provider that was already there.
+{
+  assert.ok(mentionService.forClosing.__dshMarkdownPreview === true, 'the shipped mention provider is wrapped')
+  const owner = { turn: {}, seq: 1, openFile: () => {} }
+  const resolver = mentionService.forClosing(owner)
+  client.internals.reset()
+  client.internals.trackSession('s1', '/w')
+  client.internals.update({ filesStatus: 'ready', files: [{ path: 'docs/plan.md' }], filePaths: ['docs/plan.md'] })
+
+  const mention = resolver.resolve('`docs/plan.md`'.replace(/`/g, ''))
+  assert.ok(mention !== undefined, 'a listed Markdown file becomes a mention')
+  assert.equal(mention.title, 'docs/plan.md')
+  mention.open()
+  assert.equal(client.internals.state().open, true, 'clicking it opens the panel')
+  assert.equal(client.internals.state().path, 'docs/plan.md', 'on that file')
+
+  assert.equal(resolver.resolve('docs/missing.md'), undefined, 'a path outside the workspace stays unresolved')
+  assert.equal(resolver.resolve('notes.txt'), undefined, 'a non-Markdown token is left to the other provider')
+  const theirs = resolver.resolve('produced.txt')
+  assert.ok(theirs !== undefined && theirs.label === 'produced.txt', 'the original provider still answers')
+
+  // The pure resolver: exact row, or a unique basename.
+  assert.equal(client.internals.resolveListedPath('docs/plan.md'), 'docs/plan.md')
+  client.internals.update({ filePaths: ['docs/plan.md', 'other/plan.md'] })
+  assert.equal(client.internals.resolveListedPath('plan.md'), null, 'two rows sharing a basename stay inert')
+  client.internals.update({ filePaths: ['docs/plan.md'] })
+  assert.equal(client.internals.resolveListedPath('plan.md'), 'docs/plan.md', 'a unique basename resolves')
+  assert.equal(client.internals.previewMention('notes.txt'), undefined)
+  assert.equal(client.internals.previewMention(42), undefined)
+}
+
+// Opening the panel collapses the frame's own right column.
+{
+  client.internals.reset()
+  client.internals.trackSession('s1', '/w')
+  layoutCalls.length = 0
+  client.internals.update({ open: false })
+  render(overlayRegistration.component({}))
+  assert.deepEqual(layoutCalls, [], 'nothing collapses while the panel is closed')
+  client.internals.update({ open: true })
+  render(overlayRegistration.component({}))
+  assert.deepEqual(layoutCalls, ['closeDetails'], 'opening the panel collapses the details column')
   client.internals.update({ open: false })
 }
 

@@ -457,6 +457,24 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   client.internals.update({ open: false })
 }
 
+// The deep link: a pasted URL opens the panel on the document it names, and the
+// conversation's own following does not override it afterwards.
+{
+  const s = client.internals
+  s.reset()
+  globalThis.location = { search: '?preview=docs%2Fplan.md' }
+  assert.equal(s.adoptDeepLink(), true, 'the query is adopted')
+  assert.equal(s.state().open, true)
+  assert.equal(s.state().path, 'docs/plan.md')
+  assert.equal(s.state().manual, true, 'a linked document is not overridden by the conversation')
+  globalThis.location = { search: '?preview=notes.txt' }
+  assert.equal(s.adoptDeepLink(), false, 'a non-Markdown target is ignored')
+  globalThis.location = { search: '?other=1' }
+  assert.equal(s.adoptDeepLink(), false, 'no preview key, nothing to adopt')
+  delete globalThis.location
+  s.update({ open: false, manual: false })
+}
+
 // Prose mentions: a Markdown path this workspace has opens the panel; anything
 // else keeps resolving through the provider that was already there.
 {

@@ -514,6 +514,33 @@ function trackSession(sessionId, cwd) {
   update({ sessionId: sessionId, cwd: cwd, rejected: [] })
 }
 
+/**
+ * A `?preview=<path>` query opens the panel on that document.
+ *
+ * It is a link you can paste to a colleague (or bookmark for yourself) instead
+ * of "open the preview and find docs/plan.md": the document is selected
+ * explicitly, so the conversation's own following never overrides it. The panel
+ * still needs the session's workspace before it can read anything, so the path
+ * is applied now and loaded as soon as the session is known.
+ * @returns whether a link was adopted.
+ */
+function adoptDeepLink() {
+  if (typeof location === "undefined" || typeof location.search !== "string") return false
+  var match = /[?&]preview=([^&]+)/.exec(location.search)
+  if (match === null) return false
+  var path
+  try {
+    path = decodeURIComponent(match[1])
+  } catch {
+    return false
+  }
+  if (path === "" || path.length > 1024) return false
+  if (!/\.(?:md|markdown|mdown)$/i.test(path)) return false
+  selectPath(path)
+  update({ open: true })
+  return true
+}
+
 /** Select one file explicitly, which stops the automatic follow. */
 function selectPath(path) {
   update({ path: path, manual: true })
@@ -1233,6 +1260,7 @@ exports.apply = function apply(ctx) {
     )
   })
   installMentionInterception(ctx)
+  adoptDeepLink()
 }
 
 /** Test seam: the bundle has no build step, so a spec drives the pure parts directly. */
@@ -1242,6 +1270,7 @@ exports.internals = {
   reportMentions: reportMentions,
   dismissedFor: dismissedFor,
   closePanel: closePanel,
+  adoptDeepLink: adoptDeepLink,
   mentionsOf: mentionsOf,
   segmentsOf: segmentsOf,
   isDependencyPath: isDependencyPath,

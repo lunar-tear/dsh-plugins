@@ -65,6 +65,16 @@ panel): two panels fighting for the same edge leave neither readable.
    button forces an immediate re-read; the drawer otherwise revalidates the
    file every 2.5 s and only re-renders when it changed.
 
+**A link can open one document directly.** Add the `?preview=` query:
+
+```text
+http://127.0.0.1:3080/?preview=docs%2Fplan.md
+```
+
+The linked document is an explicit choice, so the conversation's own following
+never overrides it — handy for pasting a plan to a colleague, or bookmarking one
+for yourself.
+
 ## How it is built
 
 | Half | File | Role |

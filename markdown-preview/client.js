@@ -139,6 +139,7 @@ var ZH = {
   'picker': '选择文件',
   'follow': '跟随对话',
   'manual': '工作区相对路径，例如 docs/design.md',
+  'autoOpen': '对话提到新文档时自动打开',
   'mentioned': '对话里提到过（点一条在这里打开）',
   'noMentions': '这段对话里还没提到 .md 文件。可以在上面输入一个工作区相对路径。',
   'loading': '加载中…',
@@ -160,6 +161,7 @@ var EN = {
   'picker': 'Choose a file',
   'follow': 'Follow the conversation',
   'manual': 'Workspace-relative path, e.g. docs/design.md',
+  'autoOpen': 'Open the panel when the conversation names a document',
   'mentioned': 'Mentioned in the conversation (click one to open it here)',
   'noMentions': 'This conversation has not named a Markdown file yet. Type a workspace-relative path above.',
   'loading': 'Loading…',
@@ -210,6 +212,7 @@ function ensureStyles() {
        renders the whole list as a smear of clipped glyphs. */
     '.dsv-mp-list>.dsv-mp-item{flex:0 0 auto;min-height:22px}',
     '.dsv-mp-group{font-size:11px;color:var(--dsw-alias-label-caption,#999);padding:6px 2px 2px}',
+    '.dsv-mp-switch{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary,#555);padding:2px}',
     '.dsv-mp-item{display:block;width:100%;text-align:left;padding:4px 6px;border:0;background:transparent;border-radius:6px;font:inherit;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary,#444);cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.dsv-mp-item:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06));color:var(--dsw-alias-label-primary,#111)}',
     '.dsv-mp-note{padding:16px 4px;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary,#888)}',
@@ -411,6 +414,10 @@ var INITIAL = {
   manual: false,
   /** Mentioned Markdown, per session: the panel follows the conversation. */
   mentionsBySession: {},
+  /** Whether a document the running conversation names opens the panel by itself. */
+  autoOpen: true,
+  /** Per session, the file the reader closed: it does not reopen by itself. */
+  dismissedBySession: {},
   rejected: [],
   width: initialWidth(),
   /** Workspace Markdown listing: `{ path, size, mtime }` rows plus their paths. */
@@ -463,6 +470,29 @@ function reportMentions(sessionId, paths) {
   var map = Object.assign({}, state.mentionsBySession)
   map[key] = next
   update({ mentionsBySession: map })
+}
+
+/**
+ * The file the reader closed in this session, if any. Closing is how a reader
+ * says "not this one" without turning the automatic opening off entirely.
+ * @param current - the plugin state.
+ * @returns the dismissed path, or null.
+ */
+function dismissedFor(current) {
+  if (current.sessionId === null || current.sessionId === undefined) return null
+  var path = current.dismissedBySession[String(current.sessionId)]
+  return path === undefined ? null : path
+}
+
+/** Close the panel, remembering which file the reader did not want to see. */
+function closePanel() {
+  var patch = { open: false }
+  if (state.path !== null && state.sessionId !== null && state.sessionId !== undefined) {
+    var map = Object.assign({}, state.dismissedBySession)
+    map[String(state.sessionId)] = state.path
+    patch.dismissedBySession = map
+  }
+  update(patch)
 }
 
 /** The Markdown files the current session's conversation named, newest first. */
@@ -793,6 +823,24 @@ function PreviewToggle(props) {
     // rather than only when the drawer opens.
     loadListing(cwd === undefined ? null : cwd)
   }, [sessionId, cwd])
+  // Auto-open is gated on the session actually running: a document named while
+  // the agent works is news, while entering a conversation that already named
+  // one is not — that would pop a panel over every old session the reader opens.
+  var running = props.useSession(function (snapshot) { return snapshot.running === true })
+  useEffect(function () {
+    if (plugin.autoOpen !== true || plugin.open || plugin.manual) return
+    if (running !== true || plugin.filesStatus !== "ready") return
+    var dismissed = dismissedFor(plugin)
+    var paths = mentionsOf(plugin)
+    for (var index = 0; index < paths.length; index += 1) {
+      var path = paths[index]
+      if (path === dismissed) continue
+      if (plugin.filePaths.indexOf(path) === -1) continue
+      update({ open: true, path: path })
+      return
+    }
+  }, [plugin.autoOpen, plugin.open, plugin.manual, plugin.sessionId, plugin.mentionsBySession, plugin.filesStatus, plugin.filePaths, running])
+
   var open = plugin.open
   return h(
     "button",
@@ -804,7 +852,8 @@ function PreviewToggle(props) {
       "aria-label": props.t("open"),
       "aria-pressed": open,
       onClick: function () {
-        update({ open: !open })
+        if (open) closePanel()
+        else update({ open: true })
       },
     },
     h(IconBrowseOutline16, { size: 16 }),
@@ -869,7 +918,14 @@ function FilePicker(props) {
       ? h(
         "div",
         { className: "dsv-mp-list" },
-        h("div", { className: "dsv-mp-group" }, t("mentioned")),
+        h("label", { className: "dsv-mp-switch" },
+      h("input", {
+        type: "checkbox",
+        checked: plugin.autoOpen === true,
+        onChange: function (event) { update({ autoOpen: event.target.checked }) },
+      }),
+      h("span", null, t("autoOpen"))),
+    h("div", { className: "dsv-mp-group" }, t("mentioned")),
         mentions.map(function (path) {
           return h(
             "button",
@@ -991,7 +1047,7 @@ function PreviewDrawer(props) {
       }, h(IconRefreshOutline16, { size: 14 })),
       h(DrawerButton, {
         title: t("close"),
-        onClick: function () { update({ open: false }) },
+        onClick: function () { closePanel() },
       }, h(IconCloseOutline16, { size: 14 })),
     ),
     h(FilePicker, { t: t, open: pickerOpen, onChosen: function () { setPickerOpen(false) } }),
@@ -1176,6 +1232,8 @@ exports.internals = {
   KIND: KIND,
   previewMention: previewMention,
   reportMentions: reportMentions,
+  dismissedFor: dismissedFor,
+  closePanel: closePanel,
   mentionsOf: mentionsOf,
   segmentsOf: segmentsOf,
   isDependencyPath: isDependencyPath,

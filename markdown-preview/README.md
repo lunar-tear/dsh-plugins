@@ -35,9 +35,18 @@ tables and figures while the conversation stays readable, and it remembers the
 width you drag (up to the viewport minus a 240px strip). Inside it, the
 **document owns the panel**: the file lists are an aside capped at **20% of the
 panel's height** and scroll inside that, so opening them never squeezes the
-Markdown into a strip at the bottom — the document keeps ~80% either way. Opening the panel also **collapses the frame's own
-right column** (the details panel): two panels fighting for the same edge leave
-neither readable.
+Markdown into a strip at the bottom — the document keeps ~80% either way.
+
+**It opens by itself when the conversation names a document.** While a session
+is actually running, a Markdown file it names — the plan the agent just wrote —
+opens the panel without a click, the way a plan panel pops up in Antigravity. The
+gate matters: entering an old conversation that already named documents pops
+nothing, an explicit choice of yours is never stolen, and closing the panel
+dismisses *that* file for *that* session while a newly named one still opens.
+The switch at the top of the file list turns the behavior off.
+
+Opening the panel also **collapses the frame's own right column** (the details
+panel): two panels fighting for the same edge leave neither readable.
 
 1. Or click the preview toggle in the session header (the panel-with-document
    icon beside the session utilities) — the panel opens on the right.

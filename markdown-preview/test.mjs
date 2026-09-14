@@ -107,6 +107,8 @@ globalThis.document = {
 }
 
 const fetchCalls = []
+/** What the host lists for this workspace; the blocks below keep it in step with their setup. */
+let findPaths = ['docs/design/overview.md', 'readme.md']
 globalThis.fetch = (url, options) => {
   fetchCalls.push({ url, options })
   return Promise.resolve({
@@ -114,10 +116,7 @@ globalThis.fetch = (url, options) => {
     status: 200,
     headers: { get: () => '"1-2"' },
     json: () => Promise.resolve({
-      files: [
-        { path: 'docs/design/overview.md', size: 10, mtime: 2 },
-        { path: 'readme.md', size: 20, mtime: 1 },
-      ],
+      files: findPaths.map((path) => ({ path, size: 10, mtime: 1 })),
       truncated: false,
     }),
     text: () => Promise.resolve('# hello'),
@@ -304,13 +303,19 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
 // The toggle button opens and closes the drawer.
 {
   const useSessions = (selector) => selector({ byId: { s1: { cwd: '/w' } } })
-  const toggle = render(toggleRegistration.component({ sessionId: 's1', useSessions, t: (key) => key }))
+  const toggleProps = (running) => ({
+    sessionId: 's1',
+    useSessions,
+    useSession: (selector) => selector({ running }),
+    t: (key) => key,
+  })
+  const toggle = render(toggleRegistration.component(toggleProps(false)))
   assert.equal(toggle.type, 'button')
   assert.equal(toggle.props['data-active'], 'false')
   assert.equal(client.internals.state().cwd, '/w', 'the toggle tracks the current session workspace')
   toggle.props.onClick()
   assert.equal(client.internals.state().open, true)
-  const active = render(toggleRegistration.component({ sessionId: 's1', useSessions, t: (key) => key }))
+  const active = render(toggleRegistration.component(toggleProps(false)))
   assert.equal(active.props['data-active'], 'true')
   assert.equal(active.props['aria-pressed'], true)
 }
@@ -358,7 +363,10 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
 // and never a document the conversation did not name.
 {
   const s = client.internals
-  const ready = (paths) => s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  const ready = (paths) => {
+    findPaths = paths
+    s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  }
   storage.clear()   // this block is about the conversation, not the remembered file
   s.reset()
   s.trackSession('s1', '/w')
@@ -481,6 +489,67 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
   assert.equal(client.internals.previewMention(42), undefined)
 }
 
+// Auto-open: a document named while the conversation is running opens the panel
+// by itself; entering an old conversation does not, and neither does a file the
+// reader already closed.
+{
+  const s = client.internals
+  const useSessions = (selector) => selector({ byId: { s1: { cwd: '/w' } } })
+  const props = (running) => ({
+    sessionId: 's1',
+    useSessions,
+    useSession: (selector) => selector({ running }),
+    t: (key) => key,
+  })
+  const readyWith = (paths) => {
+    findPaths = paths
+    s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  }
+
+  s.reset()
+  s.trackSession('s1', '/w')
+  s.reportMentions('s1', ['docs/plan.md'])
+  readyWith(['docs/plan.md'])
+  render(toggleRegistration.component(props(false)))
+  // Mounting the toggle reloads the listing; a real React re-runs the effect
+  // when it comes back, so the test lets that settle before rendering again.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(s.state().open, false, 'browsing a conversation that already named a document does not pop the panel')
+
+  render(toggleRegistration.component(props(true)))
+  assert.equal(s.state().open, true, 'a document named while the conversation runs opens the panel')
+  assert.equal(s.state().path, 'docs/plan.md')
+
+  // Closing it is a dismissal: the same document does not reopen.
+  client.internals.closePanel()
+  assert.equal(s.state().open, false)
+  assert.equal(client.internals.dismissedFor(s.state()), 'docs/plan.md', 'the closed file is remembered for this session')
+  render(toggleRegistration.component(props(true)))
+  assert.equal(s.state().open, false, 'the file the reader closed stays closed')
+
+  // A different document named later opens again.
+  s.reportMentions('s1', ['docs/next.md'])
+  readyWith(['docs/plan.md', 'docs/next.md'])
+  render(toggleRegistration.component(props(true)))
+  assert.equal(s.state().open, true, 'a newly named document opens the panel')
+  assert.equal(s.state().path, 'docs/next.md')
+  client.internals.closePanel()
+
+  // The switch turns the whole behavior off.
+  s.update({ autoOpen: false, open: false })
+  s.reportMentions('s1', ['docs/third.md'])
+  readyWith(['docs/plan.md', 'docs/next.md', 'docs/third.md'])
+  render(toggleRegistration.component(props(true)))
+  assert.equal(s.state().open, false, 'with the switch off nothing opens by itself')
+  s.update({ autoOpen: true, open: false })
+
+  // An explicit choice is not stolen by a document that arrives later.
+  s.selectPath('docs/plan.md')
+  render(toggleRegistration.component(props(true)))
+  assert.equal(s.state().path, 'docs/plan.md', 'a file the reader picked stays put')
+  s.update({ open: false, manual: false })
+}
+
 // Opening the panel collapses the frame's own right column.
 {
   client.internals.reset()
@@ -498,7 +567,10 @@ assert.ok(String(styles[0].dataset.pluginCss).startsWith('markdown-preview:'), '
 // An explicit choice is remembered per workspace, and reopening prefers it.
 {
   const s = client.internals
-  const ready = (paths) => s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  const ready = (paths) => {
+    findPaths = paths
+    s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  }
   s.reset()
   s.trackSession('s1', '/w')
   ready(['a.md', 'b.md'])

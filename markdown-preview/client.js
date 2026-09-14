@@ -46,6 +46,8 @@ var FIND_ROUTE = "/plugin/markdown-preview/find"
 var MAX_MENTIONS = 12
 /** How often an open preview revalidates the file it shows. */
 var POLL_MS = 2500
+/** Prefix of the per-workspace key remembering the file last shown. */
+var STORAGE_PREFIX = "dsh-markdown-preview:"
 /** How long a workspace Markdown listing is reused before it is fetched again. */
 var LISTING_TTL_MS = 15000
 /** Drawer width bounds, in px. */
@@ -319,26 +321,98 @@ function trackSession(sessionId, cwd) {
 /** Select one file explicitly, which stops the automatic follow. */
 function selectPath(path) {
   update({ path: path, manual: true })
-  if (path !== null) mention(path)
+  if (path !== null) {
+    mention(path)
+    rememberPath(state.cwd, path)
+  }
 }
 
-/** The newest mentioned path that has not already failed to load. */
+/** The store key remembering the file this workspace was last shown. */
+function storageKey(cwd) {
+  return STORAGE_PREFIX + cwd
+}
+
+/**
+ * The file this workspace last showed, so a reopened (or reloaded) page returns
+ * to it instead of asking again.
+ * @param cwd - the workspace root, or null while unknown.
+ * @returns the remembered path, or null.
+ */
+function rememberedPath(cwd) {
+  if (cwd === null || typeof localStorage === "undefined") return null
+  try {
+    return localStorage.getItem(storageKey(cwd))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Remember the file this workspace is showing.
+ * @param cwd - the workspace root.
+ * @param path - the path to remember.
+ */
+function rememberPath(cwd, path) {
+  if (cwd === null || path === null || typeof localStorage === "undefined") return
+  try {
+    localStorage.setItem(storageKey(cwd), path)
+  } catch {
+    // Private mode or a full quota: remembering is a convenience, never a failure.
+  }
+}
+
+/**
+ * The file the drawer should show. Opening it must always land on a document —
+ * "click and read" — so this picks, in order:
+ *
+ * 1. a mentioned path the workspace listing confirms exists,
+ * 2. the file this workspace last showed (an explicit choice, and the reason a
+ *    reopened page returns to the same document),
+ * 3. any other listing row that has not already failed,
+ *
+ * and, when the listing itself is unavailable, the remembered file and then any
+ * mention. Unlisted mentions are deliberately not chased while a listing is in
+ * hand: prose often names a file that lives in another checkout, and following
+ * it would spend a request (and a console 404) to learn what the listing already
+ * says. Those paths stay in the picker for an explicit choice.
+ * @param current - the plugin state.
+ * @returns the path to show, or null when this workspace has no Markdown at all.
+ */
 function followTarget(current) {
-  // A mention the workspace listing knows about is followed first: a path the
-  // model wrote in prose often names a file that lives somewhere else (another
-  // checkout, a document that only exists in the abstract), and following it
-  // would spend a request to learn what the listing already says.
-  var listed = current.filePaths
-  if (listed !== undefined && listed.length > 0) {
-    for (var listedIndex = 0; listedIndex < current.mentioned.length; listedIndex += 1) {
-      var known = current.mentioned[listedIndex]
-      if (current.rejected.indexOf(known) === -1 && listed.indexOf(known) !== -1) return known
+  var listed = current.filePaths === undefined ? [] : current.filePaths
+  var cache = rememberedPath(current.cwd)
+  function usable(path) {
+    return path !== null && current.rejected.indexOf(path) === -1
+  }
+  function firstListedMention() {
+    for (var index = 0; index < current.mentioned.length; index += 1) {
+      var candidate = current.mentioned[index]
+      if (usable(candidate) && listed.indexOf(candidate) !== -1) return candidate
     }
+    return null
   }
-  for (var index = 0; index < current.mentioned.length; index += 1) {
-    var candidate = current.mentioned[index]
-    if (current.rejected.indexOf(candidate) === -1) return candidate
+  function firstMention() {
+    for (var index = 0; index < current.mentioned.length; index += 1) {
+      if (usable(current.mentioned[index])) return current.mentioned[index]
+    }
+    return null
   }
+  if (current.filesStatus === "ready" && listed.length > 0) {
+    var chosen = firstListedMention()
+    if (chosen !== null) return chosen
+    if (usable(cache)) return cache
+    for (var index = 0; index < listed.length; index += 1) {
+      if (usable(listed[index])) return listed[index]
+    }
+    return null
+  }
+  if (current.filesStatus === "ready") return usable(cache) ? cache : null
+  if (current.filesStatus === "failed") {
+    if (usable(cache)) return cache
+    return firstMention()
+  }
+  // The listing is still on its way: wait rather than guess, because guessing is
+  // what produces the failed request this ordering exists to avoid.
   return null
 }
 
@@ -594,7 +668,7 @@ function PreviewDrawer(props) {
     if (!plugin.open || !plugin.follow || plugin.manual) return
     var target = followTarget(plugin)
     if (target !== plugin.path) update({ path: target })
-  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentioned, plugin.rejected, plugin.path, plugin.filePaths])
+  }, [plugin.open, plugin.follow, plugin.manual, plugin.mentioned, plugin.rejected, plugin.path, plugin.filePaths, plugin.filesStatus])
 
   // The workspace listing is what tells a mention apart from a path that only
   // looks like one, so following loads it as soon as the drawer opens.
@@ -629,7 +703,13 @@ function PreviewDrawer(props) {
 
   var body = null
   if (plugin.path === null) {
-    body = h("div", { className: "dsv-mp-note" }, t("empty"))
+    // No file yet: the listing that supplies the fallback may still be in
+    // flight, so say so instead of telling the reader to go find a file. With
+    // no workspace root there is nothing to wait for, so that case reads as the
+    // empty state it is.
+    var waiting = plugin.cwd !== null
+      && (plugin.filesStatus === "loading" || plugin.filesStatus === "idle")
+    body = h("div", { className: "dsv-mp-note" }, waiting ? t("loading") : t("empty"))
   } else if (current.status === "loading") {
     body = h("div", { className: "dsv-mp-note" }, t("loading"))
   } else if (current.status === "missing") {

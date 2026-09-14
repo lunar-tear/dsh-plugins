@@ -85,6 +85,15 @@ const primitives = {
   IconChevronDownOutline14: icon('chevron'),
 }
 
+// A localStorage stub: remembering the last shown file per workspace is what
+// makes a reopened drawer land straight on a document.
+const storage = new Map()
+globalThis.localStorage = {
+  getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+  setItem: (key, value) => { storage.set(key, String(value)) },
+  removeItem: (key) => { storage.delete(key) },
+}
+
 // A document stub rich enough for ensureStyles().
 const styles = []
 globalThis.document = {
@@ -196,10 +205,13 @@ const { collectMarkdownPaths, resolveFromDocument, rewriteLocalImages, messageTe
 {
   const s = client.internals
   s.reset()
+  s.trackSession('s1', '/w')
   s.mention('docs/a.md')
   s.mention('docs/b.md')
   s.mention('docs/a.md')
   assert.deepEqual(s.state().mentioned, ['docs/a.md', 'docs/b.md'], 'newest first, deduplicated')
+  assert.equal(s.followTarget(s.state()), null, 'without a listing the drawer waits for it')
+  s.update({ filesStatus: 'ready', files: [{ path: 'docs/a.md' }, { path: 'docs/b.md' }], filePaths: ['docs/a.md', 'docs/b.md'] })
   assert.equal(s.followTarget(s.state()), 'docs/a.md')
   s.update({ rejected: ['docs/a.md'] })
   assert.equal(s.followTarget(s.state()), 'docs/b.md', 'a rejected file is skipped')
@@ -310,19 +322,74 @@ assert.ok(styles.length >= 1, 'the stylesheet is injected')
   assert.equal(render(overlayRegistration.component({})), null, 'closing renders nothing again')
 }
 
-// Following prefers a mention the workspace listing actually knows.
+// Selection order: the drawer must always land on a document, without chasing
+// paths that the workspace listing says are not here.
 {
   const s = client.internals
+  const ready = (paths) => s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  storage.clear()   // this block is about mentions and the listing, not the remembered file
   s.reset()
   s.trackSession('s1', '/w')
-  s.update({ filePaths: ['docs/b.md'] })
-  s.mention('docs/a.md')
+  assert.equal(s.followTarget(s.state()), null, 'nothing mentioned and no listing yet: nothing to show')
+  ready(['docs/b.md', 'docs/c.md'])
+  s.mention('docs/a.md')          // a path from another checkout, not in this workspace
   s.mention('docs/b.md')
-  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'the listed mention wins over an unknown one')
+  assert.equal(s.followTarget(s.state()), 'docs/b.md', 'a listed mention wins over an unlisted one')
   s.update({ rejected: ['docs/b.md'] })
-  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'with every listed candidate rejected it still tries the rest')
-  s.update({ filePaths: [] })
-  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'an empty listing falls back to mention order')
+  assert.equal(s.followTarget(s.state()), 'docs/c.md', 'a failed row is skipped for the next listing row')
+  s.update({ rejected: ['docs/b.md', 'docs/c.md'] })
+  assert.equal(s.followTarget(s.state()), null, 'with every row failed there is honestly nothing to show')
+
+  // No mention at all: the newest workspace file is shown, never an empty note.
+  s.reset()
+  s.trackSession('s1', '/w')
+  ready(['newest.md', 'older.md'])
+  assert.equal(s.followTarget(s.state()), 'newest.md', 'the newest workspace Markdown is the fallback')
+
+  // The listing unavailable: the remembered file first, then any mention.
+  s.reset()
+  s.trackSession('s1', '/w')
+  s.update({ filesStatus: 'failed' })
+  assert.equal(s.followTarget(s.state()), null, 'no listing and nothing remembered: nothing to show')
+  s.mention('docs/a.md')
+  assert.equal(s.followTarget(s.state()), 'docs/a.md', 'without a listing any mention is tried')
+
+  // A listing still in flight waits instead of guessing.
+  s.reset()
+  s.trackSession('s1', '/w')
+  s.update({ filesStatus: 'loading' })
+  s.mention('docs/a.md')
+  assert.equal(s.followTarget(s.state()), null, 'while the listing loads the drawer says so rather than fetching a guess')
+}
+
+// An explicit choice is remembered per workspace, and reopening prefers it.
+{
+  const s = client.internals
+  const ready = (paths) => s.update({ filesStatus: 'ready', files: paths.map((path) => ({ path })), filePaths: paths })
+  s.reset()
+  s.trackSession('s1', '/w')
+  ready(['a.md', 'b.md'])
+  s.selectPath('b.md')
+  assert.equal(storage.get('dsh-markdown-preview:/w'), 'b.md', 'the choice is stored for this workspace')
+  assert.equal(s.state().manual, true, 'an explicit choice stops the automatic follow')
+
+  // A reopened page: the remembered file comes back unless the conversation
+  // names a listing-known file, which is the follow feature.
+  s.reset()
+  s.trackSession('s1', '/w')
+  ready(['a.md', 'b.md'])
+  assert.equal(s.followTarget(s.state()), 'b.md', 'reopening returns to the remembered file')
+  s.mention('a.md')
+  assert.equal(s.followTarget(s.state()), 'a.md', 'a listed mention still takes precedence')
+  s.update({ rejected: ['a.md'] })
+  assert.equal(s.followTarget(s.state()), 'b.md', 'and the remembered file is the fallback again')
+
+  // A remembered file that the listing cannot confirm (older than its cap, or
+  // gone) is still tried once, then skipped for good.
+  s.update({ mentioned: [], rejected: [], filePaths: ['a.md'], files: [{ path: 'a.md' }] })
+  assert.equal(s.followTarget(s.state()), 'b.md', 'an unconfirmed remembered file is tried')
+  s.update({ rejected: ['b.md'] })
+  assert.equal(s.followTarget(s.state()), 'a.md', 'once it fails the listing takes over')
 }
 
 // ── host half ───────────────────────────────────────────────────────────────
